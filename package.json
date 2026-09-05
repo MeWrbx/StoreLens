@@ -1,0 +1,16 @@
+{
+  "name": "rbx-datastore-viewer",
+  "version": "0.1.0",
+  "description": "Local web dashboard for Roblox DataStores via the Open Cloud API",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "test": "node --test test/*.test.js",
+    "lint": "node --check server.js && node --check src/roblox.js && node --check src/env.js"
+  },
+  "keywords": ["roblox", "datastore", "open-cloud", "dashboard"],
+  "license": "MIT",
+  "engines": { "node": ">=20" }
+}
