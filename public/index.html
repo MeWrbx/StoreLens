@@ -27,13 +27,14 @@
   button:disabled { opacity: .45; cursor: not-allowed; }
   button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
   button.danger { border-color: var(--danger); color: var(--danger); }
-  .layout { display: grid; grid-template-columns: 230px 280px 1fr; height: calc(100vh - 57px); }
+  .layout { display: grid; grid-template-columns: 230px 320px 1fr; height: calc(100vh - 57px); }
   .col { border-right: 1px solid var(--line); display: flex; flex-direction: column; min-width: 0; }
   .col:last-child { border-right: none; }
   .col h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted);
             margin: 0; padding: 10px 12px; border-bottom: 1px solid var(--line); }
   .col .tools { padding: 8px 10px; border-bottom: 1px solid var(--line); display: flex; gap: 6px; }
-  .col .tools input { flex: 1; min-width: 0; }
+  .col .tools input { flex: 1; min-width: 90px; }
+  .col .tools button { padding: 7px 9px; white-space: nowrap; }
   .list { overflow-y: auto; flex: 1; }
   .list button.row {
     display: block; width: 100%; text-align: left; background: none; border: none;
@@ -104,12 +105,12 @@
   <section class="col">
     <h2 id="col2Title">Keys</h2>
     <div class="tools">
-      <input id="keyFilter" placeholder="key prefix, e.g. Player_">
+      <input id="keyFilter" placeholder="key prefix">
       <button id="exportBtn" title="Download every key in this data store as JSON">Export</button>
       <button id="importBtn" title="Write a previously exported JSON file back">Import</button>
     </div>
     <div class="tools">
-      <input id="valueFilter" placeholder="value contains&hellip; (reads every key)">
+      <input id="valueFilter" placeholder="value contains&hellip;">
     </div>
     <input type="file" id="importFile" accept="application/json,.json" hidden>
     <div class="list" id="keyList"><p class="empty">Pick a data store first.</p></div>
