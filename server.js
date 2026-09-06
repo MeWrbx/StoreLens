@@ -58,7 +58,6 @@ function orderedClientFrom(q, body = {}) {
   }
 
   return new OrderedDataStoreClient({ apiKey: process.env.ROBLOX_API_KEY, universeId });
-
 }
 
 function requireWrite() {
