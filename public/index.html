@@ -3,7 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>DataStore Viewer</title>
+<title>StoreLens</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Crect%20width%3D%2232%22%20height%3D%2232%22%20rx%3D%227%22%20fill%3D%22%2314161a%22%2F%3E%3Ccircle%20cx%3D%2214%22%20cy%3D%2214%22%20r%3D%227%22%20fill%3D%22none%22%20stroke%3D%22%234f8cff%22%20stroke-width%3D%222.5%22%2F%3E%3Cpath%20d%3D%22M19.5%2019.5%20L26%2026%22%20stroke%3D%22%234f8cff%22%20stroke-width%3D%222.5%22%20stroke-linecap%3D%22round%22%2F%3E%3C%2Fsvg%3E">
 <style>
   :root {
     --bg: #14161a; --panel: #1b1e24; --panel-2: #22262e; --line: #2e333d;
@@ -66,7 +67,7 @@
 <body>
 
 <header>
-  <h1>DataStore Viewer</h1>
+  <h1>StoreLens</h1>
   <label style="color:var(--muted);font-size:12px">Universe</label>
   <input id="universe" placeholder="universe id" style="width:160px">
   <input id="scope" placeholder="scope (blank = global)" style="width:170px">
@@ -123,8 +124,11 @@ const qs = (extra = {}) => new URLSearchParams(
 ).toString();
 
 async function loadDataStores(append = false) {
-  state.universeId = $('universe').value.trim();
-  state.scope = $('scope').value.trim();
+  if (!append) {
+    state.universeId = $('universe').value.trim();
+    state.scope = $('scope').value.trim();
+    state.dsCursor = null;
+  }
   if (!state.universeId) return toast('Universe id is required.', 'err');
 
   try {
@@ -148,6 +152,7 @@ function selectDataStore(ds) {
 
 async function loadKeys(append = false) {
   if (!state.datastore) return;
+  if (!append) state.keyCursor = null;
   try {
     const data = await api('/api/keys?' + qs({
       datastore: state.datastore,
@@ -188,10 +193,12 @@ function renderEntry(value, meta) {
 
   const m = document.createElement('div');
   m.className = 'meta';
-  m.innerHTML = `<span>version <b>${meta.version || '–'}</b></span>
-                 <span>created <b>${fmt(meta.createdTime)}</b></span>
-                 <span>updated <b>${fmt(meta.versionCreatedTime)}</b></span>
-                 <span>user ids <b>${(meta.userIds || []).join(', ') || '–'}</b></span>`;
+  m.append(
+    metaField('version', meta.version),
+    metaField('created', fmt(meta.createdTime)),
+    metaField('updated', fmt(meta.versionCreatedTime)),
+    metaField('user ids', (meta.userIds || []).join(', ')),
+  );
   d.appendChild(m);
 
   const ta = document.createElement('textarea');
@@ -250,7 +257,7 @@ function renderEntry(value, meta) {
 
   const vers = document.createElement('div');
   vers.className = 'versions';
-  vers.innerHTML = '<p class="empty" style="padding:0">Loading versions&hellip;</p>';
+  vers.appendChild(emptyLine('Loading versions\u2026'));
   d.appendChild(vers);
   loadVersions(vers);
 }
@@ -258,32 +265,56 @@ function renderEntry(value, meta) {
 async function loadVersions(container) {
   try {
     const data = await api('/api/versions?' + qs({ datastore: state.datastore, key: state.key }));
-    const rows = (data.versions || []).map((v) => `
-      <tr>
-        <td>${v.version}</td>
-        <td>${fmt(v.createdTime)}</td>
-        <td>${v.contentLength ?? '–'} B</td>
-        <td>${v.deleted ? 'deleted' : ''}</td>
-        <td><button data-v="${v.version}">open</button></td>
-      </tr>`).join('');
-    container.innerHTML = rows
-      ? `<table><thead><tr><th>version</th><th>created</th><th>size</th><th></th><th></th></tr></thead><tbody>${rows}</tbody></table>`
-      : '<p class="empty" style="padding:0">No version history.</p>';
+    const versions = data.versions || [];
+    container.textContent = '';
 
-    container.querySelectorAll('button[data-v]').forEach((b) => {
-      b.onclick = async () => {
-        try {
-          const r = await api('/api/version?' + qs({
-            datastore: state.datastore, key: state.key, versionId: b.dataset.v,
-          }));
-          document.querySelector('#detail textarea').value = JSON.stringify(r.value, null, 2);
-          toast(`Loaded version ${b.dataset.v}. Saving writes it back as a new version.`);
-        } catch (e) { toast(e.message, 'err'); }
-      };
-    });
+    if (!versions.length) {
+      container.appendChild(emptyLine('No version history.'));
+      return;
+    }
+
+    const table = document.createElement('table');
+    const thead = document.createElement('thead');
+    const hrow = document.createElement('tr');
+    for (const label of ['version', 'created', 'size', '', '']) {
+      const th = document.createElement('th');
+      th.textContent = label;
+      hrow.appendChild(th);
+    }
+    thead.appendChild(hrow);
+    table.appendChild(thead);
+
+    const tbody = document.createElement('tbody');
+    for (const v of versions) {
+      const tr = document.createElement('tr');
+      tr.append(
+        cell(v.version),
+        cell(fmt(v.createdTime)),
+        cell(v.contentLength == null ? '–' : `${v.contentLength} B`),
+        cell(v.deleted ? 'deleted' : ''),
+      );
+
+      const td = document.createElement('td');
+      td.appendChild(button('open', '', () => openVersion(v.version)));
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    container.appendChild(table);
   } catch (e) {
-    container.innerHTML = `<p class="empty" style="padding:0">Versions unavailable: ${e.message}</p>`;
+    container.textContent = '';
+    container.appendChild(emptyLine(`Versions unavailable: ${e.message}`));
   }
+}
+
+async function openVersion(versionId) {
+  try {
+    const r = await api('/api/version?' + qs({
+      datastore: state.datastore, key: state.key, versionId,
+    }));
+    document.querySelector('#detail textarea').value = JSON.stringify(r.value, null, 2);
+    toast(`Loaded version ${versionId}. Saving writes it back as a new version.`);
+  } catch (e) { toast(e.message, 'err'); }
 }
 
 function renderList(el, items, label, onPick, append, loadMore) {
@@ -323,10 +354,34 @@ function button(text, cls, onClick) {
   return b;
 }
 
+function cell(text) {
+  const td = document.createElement('td');
+  td.textContent = text ?? '–';
+  return td;
+}
+
+function metaField(label, value) {
+  const span = document.createElement('span');
+  span.append(`${label} `);
+  const b = document.createElement('b');
+  b.textContent = value || '–';
+  span.appendChild(b);
+  return span;
+}
+
+function emptyLine(text) {
+  const p = document.createElement('p');
+  p.className = 'empty';
+  p.style.padding = '0';
+  p.textContent = text;
+  return p;
+}
+
 const isValidJson = (s) => { try { JSON.parse(s); return true; } catch { return false; } };
 const fmt = (t) => (t ? new Date(t).toLocaleString() : '–');
 
 $('connect').onclick = () => loadDataStores(false);
+$('scope').onchange = () => loadDataStores(false);
 $('dsFilter').onchange = () => loadDataStores(false);
 $('keyFilter').onchange = () => loadKeys(false);
 $('universe').addEventListener('keydown', (e) => e.key === 'Enter' && loadDataStores(false));
