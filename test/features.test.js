@@ -166,3 +166,80 @@ test('a silly cap is rejected before any request', async () => {
   await assert.rejects(async () => exportDataStore(standard(), ''), /"datastore" is required/);
   assert.equal(calls.length, before);
 });
+
+// ---------------------------------------------------------------------------
+// Value search
+// ---------------------------------------------------------------------------
+const { searchEntries } = await import('../src/export.js');
+
+test('search matches on the value, not the key', async () => {
+  const hit = await searchEntries(standard(), 'PlayerData', { contains: 'Player_42' });
+  assert.equal(hit.count, 1);
+  assert.equal(hit.entries[0].key, 'Player_42');
+  assert.equal(hit.scanned, 250);
+});
+
+test('search is case-insensitive by default and can be made strict', async () => {
+  assert.equal((await searchEntries(standard(), 'PlayerData', { contains: 'player_42' })).count, 1);
+  assert.equal(
+    (await searchEntries(standard(), 'PlayerData', { contains: 'player_42', caseSensitive: true })).count,
+    0,
+  );
+});
+
+test('search needs something to look for', async () => {
+  const before = calls.length;
+  await assert.rejects(async () => searchEntries(standard(), 'PlayerData'), /"contains" is required/);
+  await assert.rejects(async () => searchEntries(standard(), '', { contains: 'x' }), /"datastore" is required/);
+  assert.equal(calls.length, before);
+});
+
+test('search reports when it hit the scan cap', async () => {
+  const hit = await searchEntries(standard(), 'PlayerData', { contains: 'coins', maxEntries: 20 });
+  assert.equal(hit.truncated, true);
+  assert.equal(hit.scanned, 20);
+});
+
+// ---------------------------------------------------------------------------
+// Bulk import
+// ---------------------------------------------------------------------------
+const { importDataStore } = await import('../src/import.js');
+
+const dump = (keys) => ({ entries: keys.map((key) => ({ key, value: { coins: 1 } })) });
+
+test('a dry run writes nothing', async () => {
+  const before = calls.filter((c) => c.method === 'POST').length;
+  const r = await importDataStore(standard(), 'PlayerData', dump(['Player_7', 'Player_1']), { dryRun: true });
+
+  assert.equal(r.dryRun, true);
+  assert.equal(r.written, 1, 'only the key that 404s counts as new');
+  assert.equal(r.skipped, 1);
+  assert.equal(calls.filter((c) => c.method === 'POST').length, before, 'no writes went out');
+});
+
+test('skip-existing leaves live keys alone', async () => {
+  const r = await importDataStore(standard(), 'PlayerData', dump(['Player_1', 'Player_2']));
+  assert.equal(r.written, 0);
+  assert.equal(r.skipped, 2);
+  assert.deepEqual(r.skippedKeys.map((s) => s.reason), ['already exists', 'already exists']);
+});
+
+test('overwrite writes every row', async () => {
+  const r = await importDataStore(standard(), 'PlayerData', dump(['Player_1', 'Player_2']), { mode: 'overwrite' });
+  assert.equal(r.written, 2);
+  assert.equal(r.skipped, 0);
+  assert.equal(r.failed, 0);
+});
+
+test('a bare entries array is accepted too', async () => {
+  const r = await importDataStore(standard(), 'PlayerData', dump(['Player_1']).entries, { dryRun: true });
+  assert.equal(r.total, 1);
+});
+
+test('a broken file is rejected with a readable reason', async () => {
+  await assert.rejects(async () => importDataStore(standard(), 'D', {}), /"entries" array/);
+  await assert.rejects(async () => importDataStore(standard(), 'D', { entries: [] }), /no entries/);
+  await assert.rejects(async () => importDataStore(standard(), 'D', { entries: [{ value: 1 }] }), /no "key"/);
+  await assert.rejects(async () => importDataStore(standard(), 'D', { entries: [{ key: 'a' }] }), /no "value"/);
+  await assert.rejects(async () => importDataStore(standard(), 'D', dump(['a']), { mode: 'nuke' }), /"mode" must be/);
+});
