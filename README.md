@@ -87,6 +87,8 @@ DELETE /api/entry?datastore=&key=
 GET    /api/versions?datastore=&key=
 GET    /api/version?datastore=&key=&versionId=
 GET    /api/export?datastore=&prefix=&max=
+GET    /api/search?datastore=&prefix=&contains=&caseSensitive=&max=
+POST   /api/import           {datastore, payload, mode, dryRun}
 
 GET    /api/ordered/entries?store=&limit=&pageToken=&ascending=
 GET    /api/ordered/entry?store=&entry=
@@ -114,6 +116,24 @@ default (`max` on the endpoint, hard limit 20000) to keep a stray click from
 eating your universe's rate limit. Keys that fail to read are listed under
 `failures` instead of killing the run.
 
+## Import
+
+The Import button takes a file you exported earlier and writes it back. It runs a
+dry pass first, tells you how many keys are new and how many already exist, and
+lets you choose: overwrite everything, or only create the missing ones. Then it
+asks once more before touching anything. Blocked entirely in read-only mode.
+
+The file can be a whole export or just its `entries` array. Limit is 5000 rows
+per file, and writes go one at a time on purpose - this touches live player saves.
+
+## Finding a key by its contents
+
+Open Cloud can only filter by key prefix, so the "value contains" box reads the
+entries and matches locally. That means it costs the same as an export and is
+capped the same way, but it answers questions the key list can't: which saves
+still have the old `tutorialStep` field, who owns the duped sword, and so on.
+Combine it with the key prefix to narrow the scan first.
+
 ## Comparing versions
 
 Tick two rows in the version history and hit Compare selected for a side by side
@@ -121,8 +141,8 @@ diff. Useful for "what did this player's save look like before the patch".
 
 ## TODO
 
-- Bulk import from a previously exported JSON file
-- Filter keys by value, not just by key prefix
+- Scheduled backups instead of a manual export click
+- Undo for an import, using the versions it replaced
 
 PRs welcome.
 
