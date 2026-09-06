@@ -30,9 +30,7 @@ Open http://localhost:3000.
 ### Getting an API key
 
 Go to [create.roblox.com/dashboard/credentials](https://create.roblox.com/dashboard/credentials)
-and create a key with the DataStore system enabled for your universe. You need
-`read` and `list` to browse; add `write` and `delete` if you want to edit. Under
-security you have to allow at least your own IP.
+and create a key with the `universe-datastores` system enabled for your universe. You need `universe-datastores.objects:read` and `universe-datastores.objects:list` to browse entries within a data store, **plus `universe-datastores.control:list` to list the data stores themselves** (easy to miss - without it you get an "Insufficient scope" error on load). Add `:create`/`:update`/`:delete` under `objects` if you want to edit or remove entries. Under security you have to allow at least your own IP.
 
 Put the key in `.env` as `ROBLOX_API_KEY`. Your universe id is the number in the
 Creator Dashboard URL for the experience (not the place id) - `game.GameId` in
