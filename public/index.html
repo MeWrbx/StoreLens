@@ -106,7 +106,12 @@
     <div class="tools">
       <input id="keyFilter" placeholder="key prefix, e.g. Player_">
       <button id="exportBtn" title="Download every key in this data store as JSON">Export</button>
+      <button id="importBtn" title="Write a previously exported JSON file back">Import</button>
     </div>
+    <div class="tools">
+      <input id="valueFilter" placeholder="value contains&hellip; (reads every key)">
+    </div>
+    <input type="file" id="importFile" accept="application/json,.json" hidden>
     <div class="list" id="keyList"><p class="empty">Pick a data store first.</p></div>
   </section>
 
@@ -189,6 +194,22 @@ async function loadKeys(append = false) {
   if (!state.datastore) return;
   if (!append) state.keyCursor = null;
   try {
+    const contains = $('valueFilter').value.trim();
+
+    if (contains) {
+      // Value search reads every entry, so it has no cursor - one shot.
+      const found = await api('/api/search?' + qs({
+        datastore: state.datastore, prefix: $('keyFilter').value.trim(), contains,
+      }));
+      state.keyCursor = null;
+      renderList($('keyList'), found.entries || [], (e) => e.key, selectKey, false, loadKeys);
+
+      let msg = `${found.count} of ${found.scanned} keys matched.`;
+      if (found.truncated) msg += ' Scan hit the cap, not every key was checked.';
+      toast(msg, found.count ? 'ok' : 'err');
+      return;
+    }
+
     const data = await api('/api/keys?' + qs({
       datastore: state.datastore,
       prefix: $('keyFilter').value.trim(),
@@ -391,6 +412,9 @@ function setMode(mode) {
   $('orderedStore').hidden = !ordered;
   $('keyFilter').hidden = ordered;
   $('exportBtn').hidden = ordered;
+  $('importBtn').hidden = ordered;
+  $('valueFilter').hidden = ordered;
+  $('valueFilter').parentElement.hidden = ordered;
 
   state.datastore = null;
   state.key = null;
@@ -528,6 +552,67 @@ async function exportStore() {
   } finally {
     btn.disabled = false;
     btn.textContent = 'Export';
+  }
+}
+
+async function runImport(file) {
+  if (!state.datastore) return toast('Pick a data store first.', 'err');
+
+  let payload;
+  try {
+    payload = JSON.parse(await file.text());
+  } catch {
+    return toast('That file is not valid JSON.', 'err');
+  }
+
+  const rows = Array.isArray(payload) ? payload : payload?.entries;
+  if (!Array.isArray(rows) || !rows.length) {
+    return toast('No "entries" array in that file.', 'err');
+  }
+
+  const btn = $('importBtn');
+  const post = (mode, dryRun) => api('/api/import', {
+    method: 'POST',
+    body: JSON.stringify({
+      universeId: state.universeId, scope: state.scope,
+      datastore: state.datastore, payload, mode, dryRun,
+    }),
+  });
+
+  btn.disabled = true;
+  btn.textContent = 'Checking\u2026';
+
+  try {
+    // Dry run first so the confirm box can state real numbers.
+    const plan = await post('skip-existing', true);
+
+    const overwrite = plan.skipped > 0 && confirm(
+      `${plan.total} entries in the file.\n`
+      + `${plan.written} are new, ${plan.skipped} already exist in "${state.datastore}".\n\n`
+      + 'OK = overwrite the existing ones too.\n'
+      + 'Cancel = only write the new ones.',
+    );
+
+    const mode = overwrite ? 'overwrite' : 'skip-existing';
+    const count = overwrite ? plan.total : plan.written;
+
+    if (!count) return toast('Nothing to write.', 'err');
+    if (!confirm(`Write ${count} entries into "${state.datastore}"? This changes live data.`)) {
+      return toast('Import cancelled.');
+    }
+
+    btn.textContent = 'Importing\u2026';
+    const result = await post(mode, false);
+
+    let msg = `Imported ${result.written}, skipped ${result.skipped}.`;
+    if (result.failed) msg += ` ${result.failed} failed.`;
+    toast(msg, result.failed ? 'err' : 'ok');
+    loadKeys(false);
+  } catch (e) {
+    toast(e.message, 'err');
+  } finally {
+    btn.disabled = state.readOnly;
+    btn.textContent = 'Import';
   }
 }
 
@@ -693,6 +778,13 @@ $('scope').onchange = reload;
 $('dsFilter').onchange = () => loadDataStores(false);
 $('keyFilter').onchange = () => loadKeys(false);
 $('exportBtn').onclick = exportStore;
+$('importBtn').onclick = () => $('importFile').click();
+$('importFile').onchange = (e) => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (file) runImport(file);
+};
+$('valueFilter').onchange = () => loadKeys(false);
 $('storeMode').onchange = (e) => setMode(e.target.value);
 $('universe').addEventListener('keydown', (e) => e.key === 'Enter' && reload());
 $('orderedStore').addEventListener('keydown', (e) => e.key === 'Enter' && loadOrderedEntries(false));
@@ -700,6 +792,7 @@ $('orderedStore').addEventListener('keydown', (e) => e.key === 'Enter' && loadOr
 api('/api/health').then((h) => {
   state.readOnly = h.readOnly;
   $('mode').textContent = h.readOnly ? 'read-only' : (h.hasApiKey ? 'ready' : 'no api key');
+  $('importBtn').disabled = h.readOnly;
   if (h.defaultUniverseId) {
     $('universe').value = h.defaultUniverseId;
     loadDataStores(false);
