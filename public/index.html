@@ -62,6 +62,716 @@
   .versions td, .versions th { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); }
   .versions th { color: var(--muted); font-weight: 500; }
   .badge { font-size: 11px; padding: 2px 7px; border-radius: 20px; border: 1px solid var(--line); color: var(--muted); }
+  .row-val { float: right; color: var(--muted); }
+  .list button.row.active .row-val { color: #fff; }
+  .diff { margin-top: 14px; border: 1px solid var(--line); border-radius: 8px; overflow: auto; max-height: 60vh; }
+  .diff table { width: 100%; border-collapse: collapse; font-family: var(--mono); font-size: 12.5px; }
+  .diff td { padding: 1px 8px; white-space: pre; vertical-align: top; }
+  .diff td.num { color: var(--muted); text-align: right; width: 1%; user-select: none; }
+  .diff tr.del td:nth-child(-n+2) { background: #3a1d1d; }
+  .diff tr.add td:nth-child(n+3) { background: #16301c; }
+  .diff td.side { border-right: 1px solid var(--line); }
+  .diff-head { display: flex; gap: 10px; align-items: center; margin: 12px 0 0; flex-wrap: wrap; }
+  .versions td.pick { width: 1%; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>StoreLens</h1>
+  <label style="color:var(--muted);font-size:12px">Universe</label>
+  <input id="universe" placeholder="universe id" style="width:160px">
+  <input id="scope" placeholder="scope (blank = global)" style="width:170px">
+  <select id="storeMode" title="Store type">
+    <option value="standard">Standard</option>
+    <option value="ordered">Ordered</option>
+  </select>
+  <button id="connect" class="primary">Load</button>
+  <span class="grow"></span>
+  <span id="mode" class="badge">&ndash;</span>
+</header>
+
+<div class="layout">
+  <section class="col">
+    <h2 id="col1Title">Data stores</h2>
+    <div class="tools">
+      <input id="dsFilter" placeholder="filter by prefix">
+      <input id="orderedStore" placeholder="ordered store name" hidden>
+    </div>
+    <div class="list" id="dsList"><p class="empty">Enter a universe id and hit Load.</p></div>
+  </section>
+
+  <section class="col">
+    <h2 id="col2Title">Keys</h2>
+    <div class="tools">
+      <input id="keyFilter" placeholder="key prefix, e.g. Player_">
+      <button id="exportBtn" title="Download every key in this data store as JSON">Export</button>
+    </div>
+    <div class="list" id="keyList"><p class="empty">Pick a data store first.</p></div>
+  </section>
+
+  <section class="col detail" id="detail">
+    <p class="empty">No key selected.</p>
+  </section>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const state = { universeId: '', scope: '', datastore: null, key: null,
+                dsCursor: null, keyCursor: null, meta: null, readOnly: false,
+                mode: 'standard', orderedStore: null, orderedToken: null, diffPick: [] };
+
+function toast(msg, kind = '') {
+  document.querySelector('.toast')?.remove();
+  const el = document.createElement('div');
+  el.className = 'toast ' + kind;
+  el.textContent = msg;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), kind === 'err' ? 7000 : 3000);
+}
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    ...opts,
+    headers: opts.body ? { 'content-type': 'application/json' } : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data;
+}
+
+const qs = (extra = {}) => new URLSearchParams(
+  Object.entries({ universeId: state.universeId, scope: state.scope, ...extra })
+        .filter(([, v]) => v !== undefined && v !== null && v !== '')
+).toString();
+
+async function loadDataStores(append = false) {
+  if (!append) {
+    const nextUniverse = $('universe').value.trim();
+    const nextScope = $('scope').value.trim();
+
+    // Switching universe or scope must not leave the old selection on screen.
+    if (nextUniverse !== state.universeId || nextScope !== state.scope) {
+      state.datastore = null;
+      state.key = null;
+      $('keyList').textContent = '';
+      $('keyList').appendChild(emptyLine('Pick a data store first.'));
+      $('detail').textContent = '';
+      $('detail').appendChild(emptyLine('No key selected.'));
+    }
+
+    state.universeId = nextUniverse;
+    state.scope = nextScope;
+    state.dsCursor = null;
+  }
+  if (!state.universeId) return toast('Universe id is required.', 'err');
+
+  try {
+    const data = await api('/api/datastores?' + qs({
+      prefix: $('dsFilter').value.trim(),
+      cursor: append ? state.dsCursor : '',
+    }));
+    state.dsCursor = data.nextPageCursor || null;
+    renderList($('dsList'), data.datastores || [], (d) => d.name, selectDataStore, append, loadDataStores);
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+function selectDataStore(ds) {
+  state.datastore = ds.name;
+  state.keyCursor = null;
+  state.key = null;
+  $('detail').innerHTML = '<p class="empty">No key selected.</p>';
+  markActive($('dsList'), ds.name);
+  loadKeys(false);
+}
+
+async function loadKeys(append = false) {
+  if (!state.datastore) return;
+  if (!append) state.keyCursor = null;
+  try {
+    const data = await api('/api/keys?' + qs({
+      datastore: state.datastore,
+      prefix: $('keyFilter').value.trim(),
+      cursor: append ? state.keyCursor : '',
+    }));
+    state.keyCursor = data.nextPageCursor || null;
+    renderList($('keyList'), data.keys || [], (k) => k.key, selectKey, append, loadKeys);
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+function selectKey(k) {
+  state.key = k.key;
+  markActive($('keyList'), k.key);
+  openEntry();
+}
+
+async function openEntry() {
+  $('detail').innerHTML = '<p class="empty">Loading&hellip;</p>';
+  try {
+    const data = await api('/api/entry?' + qs({ datastore: state.datastore, key: state.key }));
+    state.meta = data.meta;
+    renderEntry(data.value, data.meta);
+  } catch (e) {
+    $('detail').innerHTML = '<p class="empty">Could not load this key.</p>';
+    toast(e.message, 'err');
+  }
+}
+
+function renderEntry(value, meta) {
+  const d = $('detail');
+  d.innerHTML = '';
+
+  const title = document.createElement('h2');
+  title.style.cssText = 'margin:0 0 8px;font-size:15px;font-family:var(--mono)';
+  title.textContent = `${state.datastore} / ${state.key}`;
+  d.appendChild(title);
+
+  const m = document.createElement('div');
+  m.className = 'meta';
+  m.append(
+    metaField('version', meta.version),
+    metaField('created', fmt(meta.createdTime)),
+    metaField('updated', fmt(meta.versionCreatedTime)),
+    metaField('user ids', (meta.userIds || []).join(', ')),
+  );
+  d.appendChild(m);
+
+  const ta = document.createElement('textarea');
+  ta.value = JSON.stringify(value, null, 2);
+  ta.spellcheck = false;
+  ta.addEventListener('input', () => {
+    const ok = isValidJson(ta.value);
+    ta.classList.toggle('invalid', !ok);
+    saveBtn.disabled = !ok || state.readOnly;
+  });
+  d.appendChild(ta);
+
+  const actions = document.createElement('div');
+  actions.className = 'actions';
+
+  const saveBtn = button('Save', 'primary', async () => {
+    if (!confirm(`Overwrite "${state.key}" in "${state.datastore}"?`)) return;
+    saveBtn.disabled = true;
+    try {
+      const r = await api('/api/entry', {
+        method: 'POST',
+        body: JSON.stringify({
+          universeId: state.universeId, scope: state.scope,
+          datastore: state.datastore, key: state.key,
+          value: JSON.parse(ta.value),
+          matchVersion: meta.version,
+          userIds: meta.userIds || [],
+        }),
+      });
+      toast(`Saved as version ${r.version}`, 'ok');
+      openEntry();
+    } catch (e) {
+      toast(e.message, 'err');
+      saveBtn.disabled = false;
+    }
+  });
+
+  const delBtn = button('Delete', 'danger', async () => {
+    if (!confirm(`Delete "${state.key}"? Previous versions are kept.`)) return;
+    try {
+      await api('/api/entry?' + qs({ datastore: state.datastore, key: state.key }), { method: 'DELETE' });
+      toast('Key deleted.', 'ok');
+      $('detail').innerHTML = '<p class="empty">Key deleted.</p>';
+      loadKeys(false);
+    } catch (e) { toast(e.message, 'err'); }
+  });
+
+  const copyBtn = button('Copy JSON', '', () => {
+    navigator.clipboard.writeText(ta.value).then(() => toast('Copied.', 'ok'));
+  });
+
+  saveBtn.disabled = state.readOnly;
+  delBtn.disabled = state.readOnly;
+  actions.append(saveBtn, delBtn, copyBtn);
+  d.appendChild(actions);
+
+  const vers = document.createElement('div');
+  vers.className = 'versions';
+  vers.appendChild(emptyLine('Loading versions\u2026'));
+  d.appendChild(vers);
+  loadVersions(vers);
+}
+
+async function loadVersions(container) {
+  try {
+    const data = await api('/api/versions?' + qs({ datastore: state.datastore, key: state.key }));
+    const versions = data.versions || [];
+    container.textContent = '';
+
+    if (!versions.length) {
+      container.appendChild(emptyLine('No version history.'));
+      return;
+    }
+
+    const table = document.createElement('table');
+    const thead = document.createElement('thead');
+    const hrow = document.createElement('tr');
+    for (const label of ['', 'version', 'created', 'size', '', '']) {
+      const th = document.createElement('th');
+      th.textContent = label;
+      hrow.appendChild(th);
+    }
+    thead.appendChild(hrow);
+    table.appendChild(thead);
+
+    state.diffPick = [];
+    const diffBox = document.createElement('div');
+
+    const compareBtn = button('Compare selected', '', () => {
+      if (state.diffPick.length !== 2) return toast('Tick exactly two versions.', 'err');
+      const [a, b] = state.diffPick;
+      compareVersions(diffBox, a, b);
+    });
+    compareBtn.disabled = true;
+
+    const tbody = document.createElement('tbody');
+    for (const v of versions) {
+      const tr = document.createElement('tr');
+
+      const pick = document.createElement('td');
+      pick.className = 'pick';
+      const box = document.createElement('input');
+      box.type = 'checkbox';
+      box.title = 'Pick two versions to compare';
+      box.onchange = () => {
+        if (box.checked) state.diffPick.push(v.version);
+        else state.diffPick = state.diffPick.filter((x) => x !== v.version);
+        compareBtn.disabled = state.diffPick.length !== 2;
+      };
+      pick.appendChild(box);
+
+      tr.append(
+        pick,
+        cell(v.version),
+        cell(fmt(v.createdTime)),
+        cell(v.contentLength == null ? '–' : `${v.contentLength} B`),
+        cell(v.deleted ? 'deleted' : ''),
+      );
+
+      const td = document.createElement('td');
+      td.appendChild(button('open', '', () => openVersion(v.version)));
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    }
+    table.appendChild(tbody);
+    container.appendChild(table);
+
+    const bar = document.createElement('div');
+    bar.className = 'diff-head';
+    bar.appendChild(compareBtn);
+    container.append(bar, diffBox);
+  } catch (e) {
+    container.textContent = '';
+    container.appendChild(emptyLine(`Versions unavailable: ${e.message}`));
+  }
+}
+
+async function openVersion(versionId) {
+  try {
+    const r = await api('/api/version?' + qs({
+      datastore: state.datastore, key: state.key, versionId,
+    }));
+    document.querySelector('#detail textarea').value = JSON.stringify(r.value, null, 2);
+    toast(`Loaded version ${versionId}. Saving writes it back as a new version.`);
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+function setMode(mode) {
+  state.mode = mode;
+  const ordered = mode === 'ordered';
+
+  $('col1Title').textContent = ordered ? 'Ordered store' : 'Data stores';
+  $('col2Title').textContent = ordered ? 'Entries' : 'Keys';
+  $('dsFilter').hidden = ordered;
+  $('orderedStore').hidden = !ordered;
+  $('keyFilter').hidden = ordered;
+  $('exportBtn').hidden = ordered;
+
+  state.datastore = null;
+  state.key = null;
+  state.orderedStore = null;
+  state.orderedToken = null;
+  $('dsList').textContent = '';
+  $('keyList').textContent = '';
+  $('detail').textContent = '';
+  $('dsList').appendChild(emptyLine(ordered
+    ? 'Ordered stores are not listable - type the exact name and press Enter.'
+    : 'Enter a universe id and hit Load.'));
+  $('keyList').appendChild(emptyLine(ordered ? 'Open a store first.' : 'Pick a data store first.'));
+  $('detail').appendChild(emptyLine('Nothing selected.'));
+}
+
+async function loadOrderedEntries(append = false) {
+  if (!append) {
+    state.universeId = $('universe').value.trim();
+    state.scope = $('scope').value.trim();
+    state.orderedStore = $('orderedStore').value.trim();
+    state.orderedToken = null;
+  }
+  if (!state.universeId) return toast('Universe id is required.', 'err');
+  if (!state.orderedStore) return toast('Type the ordered store name.', 'err');
+
+  try {
+    const data = await api('/api/ordered/entries?' + qs({
+      store: state.orderedStore,
+      pageToken: append ? state.orderedToken : '',
+    }));
+    state.orderedToken = data.nextPageToken || null;
+
+    const items = data.entries || [];
+    renderList($('keyList'), items, (e) => e.id, selectOrderedEntry, append,
+      loadOrderedEntries, (e) => e.value);
+
+    if (!append) {
+      $('dsList').textContent = '';
+      $('dsList').appendChild(emptyLine(`${state.orderedStore} - ${items.length} entries loaded`));
+    }
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+function selectOrderedEntry(entry) {
+  state.key = entry.id;
+  markActive($('keyList'), entry.id);
+  renderOrderedEntry(entry);
+}
+
+function renderOrderedEntry(entry) {
+  const d = $('detail');
+  d.textContent = '';
+
+  const title = document.createElement('h2');
+  title.style.cssText = 'margin:0 0 8px;font-size:15px;font-family:var(--mono)';
+  title.textContent = `${state.orderedStore} / ${entry.id}`;
+  d.appendChild(title);
+
+  const input = document.createElement('input');
+  input.type = 'number';
+  input.step = '1';
+  input.value = entry.value;
+  input.style.width = '220px';
+  d.appendChild(input);
+
+  const actions = document.createElement('div');
+  actions.className = 'actions';
+
+  const send = async (payload, okMsg) => {
+    try {
+      const r = await api('/api/ordered/entry', {
+        method: 'POST',
+        body: JSON.stringify({
+          universeId: state.universeId, scope: state.scope,
+          store: state.orderedStore, entry: entry.id, ...payload,
+        }),
+      });
+      toast(okMsg, 'ok');
+      renderOrderedEntry({ id: entry.id, value: r.value ?? input.value });
+      loadOrderedEntries(false);
+    } catch (e) { toast(e.message, 'err'); }
+  };
+
+  const saveBtn = button('Save', 'primary', () => {
+    if (!Number.isInteger(Number(input.value))) return toast('Ordered stores hold whole numbers only.', 'err');
+    send({ value: Number(input.value) }, 'Saved.');
+  });
+  const plusBtn = button('+1', '', () => send({ increment: 1 }, 'Incremented.'));
+  const minusBtn = button('-1', '', () => send({ increment: -1 }, 'Decremented.'));
+
+  const delBtn = button('Delete', 'danger', async () => {
+    if (!confirm(`Delete "${entry.id}" from "${state.orderedStore}"?`)) return;
+    try {
+      await api('/api/ordered/entry?' + qs({ store: state.orderedStore, entry: entry.id }),
+        { method: 'DELETE' });
+      toast('Entry deleted.', 'ok');
+      $('detail').textContent = '';
+      $('detail').appendChild(emptyLine('Entry deleted.'));
+      loadOrderedEntries(false);
+    } catch (e) { toast(e.message, 'err'); }
+  });
+
+  for (const b of [saveBtn, plusBtn, minusBtn, delBtn]) b.disabled = state.readOnly;
+  actions.append(saveBtn, plusBtn, minusBtn, delBtn);
+  d.appendChild(actions);
+}
+
+async function exportStore() {
+  if (!state.datastore) return toast('Pick a data store first.', 'err');
+
+  const btn = $('exportBtn');
+  btn.disabled = true;
+  btn.textContent = 'Exporting...';
+
+  try {
+    const data = await api('/api/export?' + qs({
+      datastore: state.datastore, prefix: $('keyFilter').value.trim(),
+    }));
+
+    const name = `${state.datastore.replace(/[^\w.-]+/g, '_')}-${new Date().toISOString().slice(0, 10)}.json`;
+    const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)],
+      { type: 'application/json' }));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    a.click();
+    URL.revokeObjectURL(url);
+
+    let msg = `Exported ${data.count} entries.`;
+    if (data.truncated) msg += ' Hit the export cap, some keys were left out.';
+    if (data.failures?.length) msg += ` ${data.failures.length} key(s) could not be read.`;
+    toast(msg, data.truncated || data.failures?.length ? 'err' : 'ok');
+  } catch (e) {
+    toast(e.message, 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Export';
+  }
+}
+
+// Plain LCS over lines - the entries here are small enough for it.
+function diffLines(a, b) {
+  const n = a.length, m = b.length;
+  const dp = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--) {
+    for (let j = m - 1; j >= 0; j--) {
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+
+  const rows = [];
+  let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { rows.push({ l: a[i], r: b[j], t: 'same' }); i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { rows.push({ l: a[i], r: null, t: 'del' }); i++; }
+    else { rows.push({ l: null, r: b[j], t: 'add' }); j++; }
+  }
+  while (i < n) rows.push({ l: a[i++], r: null, t: 'del' });
+  while (j < m) rows.push({ l: null, r: b[j++], t: 'add' });
+  return rows;
+}
+
+async function compareVersions(container, idA, idB) {
+  try {
+    const [a, b] = await Promise.all([idA, idB].map((v) =>
+      api('/api/version?' + qs({ datastore: state.datastore, key: state.key, versionId: v }))));
+
+    const left = JSON.stringify(a.value, null, 2).split('\n');
+    const right = JSON.stringify(b.value, null, 2).split('\n');
+
+    if (left.length > 1500 || right.length > 1500) {
+      return toast('Those versions are too large to diff here.', 'err');
+    }
+
+    container.textContent = '';
+
+    const head = document.createElement('div');
+    head.className = 'diff-head';
+    const label = document.createElement('span');
+    label.className = 'meta';
+    label.style.margin = '0';
+    label.textContent = `${idA}  vs  ${idB}`;
+    head.append(label, button('Close', '', () => { container.textContent = ''; }));
+    container.appendChild(head);
+
+    const rows = diffLines(left, right);
+    const changed = rows.filter((r) => r.t !== 'same').length;
+
+    const wrap = document.createElement('div');
+    wrap.className = 'diff';
+    const table = document.createElement('table');
+    const tbody = document.createElement('tbody');
+
+    let ln = 0, rn = 0;
+    for (const row of rows) {
+      const tr = document.createElement('tr');
+      tr.className = row.t;
+
+      const lNum = document.createElement('td');
+      lNum.className = 'num';
+      lNum.textContent = row.l === null ? '' : String(++ln);
+      const lTxt = document.createElement('td');
+      lTxt.className = 'side';
+      lTxt.textContent = row.l ?? '';
+
+      const rNum = document.createElement('td');
+      rNum.className = 'num';
+      rNum.textContent = row.r === null ? '' : String(++rn);
+      const rTxt = document.createElement('td');
+      rTxt.textContent = row.r ?? '';
+
+      tr.append(lNum, lTxt, rNum, rTxt);
+      tbody.appendChild(tr);
+    }
+
+    table.appendChild(tbody);
+    wrap.appendChild(table);
+    container.appendChild(wrap);
+
+    if (!changed) container.appendChild(emptyLine('These two versions are identical.'));
+  } catch (e) { toast(e.message, 'err'); }
+}
+
+function renderList(el, items, label, onPick, append, loadMore, valueOf) {
+  if (!append) el.textContent = '';
+  el.querySelector('.more')?.remove();
+  el.querySelector('.empty')?.remove();
+
+  if (!items.length && !append) {
+    el.appendChild(emptyLine('Nothing found.'));
+    return;
+  }
+  for (const item of items) {
+    const b = document.createElement('button');
+    b.className = 'row';
+    b.textContent = label(item);
+    b.dataset.label = label(item);
+
+    if (valueOf) {
+      const v = document.createElement('span');
+      v.className = 'row-val';
+      v.textContent = valueOf(item);
+      b.appendChild(v);
+    }
+
+    b.onclick = () => onPick(item);
+    el.appendChild(b);
+  }
+  const cursor = el === $('dsList') ? state.dsCursor
+    : (state.mode === 'ordered' ? state.orderedToken : state.keyCursor);
+  if (cursor) {
+    const more = button('Load more', 'more', () => loadMore(true));
+    more.className = 'more';
+    el.appendChild(more);
+  }
+}
+
+function markActive(el, label) {
+  el.querySelectorAll('.row').forEach((b) => b.classList.toggle('active', b.dataset.label === label));
+}
+
+function button(text, cls, onClick) {
+  const b = document.createElement('button');
+  b.textContent = text;
+  if (cls) b.className = cls;
+  b.onclick = onClick;
+  return b;
+}
+
+function cell(text) {
+  const td = document.createElement('td');
+  td.textContent = text ?? '–';
+  return td;
+}
+
+function metaField(label, value) {
+  const span = document.createElement('span');
+  span.append(`${label} `);
+  const b = document.createElement('b');
+  b.textContent = value || '–';
+  span.appendChild(b);
+  return span;
+}
+
+function emptyLine(text, flush = true) {
+  const p = document.createElement('p');
+  p.className = 'empty';
+  if (flush) p.style.padding = '0';
+  p.textContent = text;
+  return p;
+}
+
+const isValidJson = (s) => { try { JSON.parse(s); return true; } catch { return false; } };
+const fmt = (t) => (t ? new Date(t).toLocaleString() : '–');
+
+const reload = () => (state.mode === 'ordered' ? loadOrderedEntries(false) : loadDataStores(false));
+
+$('connect').onclick = reload;
+$('scope').onchange = reload;
+$('dsFilter').onchange = () => loadDataStores(false);
+$('keyFilter').onchange = () => loadKeys(false);
+$('exportBtn').onclick = exportStore;
+$('storeMode').onchange = (e) => setMode(e.target.value);
+$('universe').addEventListener('keydown', (e) => e.key === 'Enter' && reload());
+$('orderedStore').addEventListener('keydown', (e) => e.key === 'Enter' && loadOrderedEntries(false));
+
+api('/api/health').then((h) => {
+  state.readOnly = h.readOnly;
+  $('mode').textContent = h.readOnly ? 'read-only' : (h.hasApiKey ? 'ready' : 'no api key');
+  if (h.defaultUniverseId) {
+    $('universe').value = h.defaultUniverseId;
+    loadDataStores(false);
+  }
+}).catch(() => $('mode').textContent = 'server offline');
+</script>
+</body>
+</html>
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StoreLens</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%2032%2032%22%3E%3Crect%20width%3D%2232%22%20height%3D%2232%22%20rx%3D%227%22%20fill%3D%22%2314161a%22%2F%3E%3Ccircle%20cx%3D%2214%22%20cy%3D%2214%22%20r%3D%227%22%20fill%3D%22none%22%20stroke%3D%22%234f8cff%22%20stroke-width%3D%222.5%22%2F%3E%3Cpath%20d%3D%22M19.5%2019.5%20L26%2026%22%20stroke%3D%22%234f8cff%22%20stroke-width%3D%222.5%22%20stroke-linecap%3D%22round%22%2F%3E%3C%2Fsvg%3E">
+<style>
+  :root {
+    --bg: #14161a; --panel: #1b1e24; --panel-2: #22262e; --line: #2e333d;
+    --text: #e6e8ec; --muted: #939aa6; --accent: #4f8cff; --danger: #ff5f56;
+    --ok: #3fb950; --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+           padding: 12px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  header h1 { font-size: 15px; margin: 0 12px 0 0; font-weight: 600; letter-spacing: .2px; }
+  .grow { flex: 1; }
+  input, button, select {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 7px 10px; font: inherit; }
+  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  button { cursor: pointer; }
+  button:hover:not(:disabled) { border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  button.danger { border-color: var(--danger); color: var(--danger); }
+  .layout { display: grid; grid-template-columns: 230px 280px 1fr; height: calc(100vh - 57px); }
+  .col { border-right: 1px solid var(--line); display: flex; flex-direction: column; min-width: 0; }
+  .col:last-child { border-right: none; }
+  .col h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted);
+            margin: 0; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+  .col .tools { padding: 8px 10px; border-bottom: 1px solid var(--line); display: flex; gap: 6px; }
+  .col .tools input { flex: 1; min-width: 0; }
+  .list { overflow-y: auto; flex: 1; }
+  .list button.row {
+    display: block; width: 100%; text-align: left; background: none; border: none;
+    border-bottom: 1px solid var(--line); border-radius: 0; padding: 8px 12px;
+    font-family: var(--mono); font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .list button.row:hover { background: var(--panel-2); }
+  .list button.row.active { background: var(--accent); color: #fff; }
+  .list .more { margin: 8px auto; display: block; }
+  .empty { padding: 14px 12px; color: var(--muted); font-size: 12.5px; }
+  .detail { padding: 14px 16px; overflow-y: auto; }
+  .meta { display: flex; gap: 16px; flex-wrap: wrap; color: var(--muted);
+          font-size: 12px; font-family: var(--mono); margin-bottom: 10px; }
+  .meta b { color: var(--text); font-weight: 500; }
+  textarea { width: 100%; min-height: 46vh; resize: vertical; background: #101216; color: var(--text);
+             border: 1px solid var(--line); border-radius: 8px; padding: 12px;
+             font-family: var(--mono); font-size: 13px; tab-size: 2; }
+  textarea.invalid { border-color: var(--danger); }
+  .actions { display: flex; gap: 8px; align-items: center; margin: 10px 0; flex-wrap: wrap; }
+  .toast { position: fixed; right: 16px; bottom: 16px; max-width: 420px; padding: 10px 14px;
+           border-radius: 8px; background: var(--panel-2); border: 1px solid var(--line);
+           box-shadow: 0 8px 24px #0008; font-size: 13px; }
+  .toast.err { border-color: var(--danger); }
+  .toast.ok { border-color: var(--ok); }
+  .versions { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 12px; }
+  .versions table { width: 100%; border-collapse: collapse; font-size: 12.5px; font-family: var(--mono); }
+  .versions td, .versions th { text-align: left; padding: 5px 8px; border-bottom: 1px solid var(--line); }
+  .versions th { color: var(--muted); font-weight: 500; }
+  .badge { font-size: 11px; padding: 2px 7px; border-radius: 20px; border: 1px solid var(--line); color: var(--muted); }
 </style>
 </head>
 <body>
