@@ -45,6 +45,7 @@ Studio gives you the same thing.
 | `PORT` | 3000 | |
 | `HOST` | 127.0.0.1 | don't bind this to 0.0.0.0 |
 | `READ_ONLY` | false | `true` blocks writes and deletes |
+| `ROBLOX_TIMEOUT_MS` | 15000 | request deadline, prevents a hung dashboard |
 | `ROBLOX_API_BASE` | Open Cloud | override for local testing |
 
 ## A few things worth knowing
@@ -62,6 +63,11 @@ them back from the version list.
 
 There's no auth on this thing at all, which is why it binds to localhost. Don't
 put it on a server.
+
+Because it binds to localhost, any website you have open in the same browser could
+otherwise talk to it. The server therefore rejects requests carrying a foreign
+`Origin` or `Sec-Fetch-Site: cross-site`, and requires `Content-Type: application/json`
+on writes. Keep that guard in place if you fork this.
 
 If you're touching a live game, run with `READ_ONLY=true` and only turn it off for
 the minute you actually need to fix something.
