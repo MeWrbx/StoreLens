@@ -3,6 +3,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DataStoreClient, RobloxApiError, ValidationError } from './src/roblox.js';
+import { OrderedDataStoreClient } from './src/ordered.js';
+import { exportDataStore } from './src/export.js';
 import { loadEnv } from './src/env.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -42,6 +44,19 @@ function clientFrom(q, body = {}) {
   }
 
   return new DataStoreClient({ apiKey: process.env.ROBLOX_API_KEY, universeId });
+}
+
+function orderedClientFrom(q, body = {}) {
+  const universeId = q.get('universeId') || body.universeId || process.env.ROBLOX_UNIVERSE_ID;
+
+  if (!process.env.ROBLOX_API_KEY) {
+    throw new HttpError(400, 'ROBLOX_API_KEY is not set. Copy .env.example to .env and add your Open Cloud key.');
+  }
+  if (!universeId) {
+    throw new HttpError(400, 'No universe id. Type one into the header field or set ROBLOX_UNIVERSE_ID in .env.');
+  }
+
+  return new OrderedDataStoreClient({ apiKey: process.env.ROBLOX_API_KEY, universeId });
 }
 
 function requireWrite() {
@@ -136,6 +151,42 @@ const routes = {
   'GET /api/version': (q) => clientFrom(q).getVersion(
     q.get('datastore'), q.get('key'), q.get('versionId'), { scope: q.get('scope') },
   ),
+
+  // Ordered data stores - the integer, always-sorted ones behind leaderboards.
+  'GET /api/ordered/entries': (q) => orderedClientFrom(q).listEntries(q.get('store'), {
+    scope: q.get('scope'), limit: q.get('limit'), pageToken: q.get('pageToken'),
+    ascending: q.get('ascending') === 'true',
+  }),
+
+  'GET /api/ordered/entry': (q) => orderedClientFrom(q).getEntry(q.get('store'), q.get('entry'), {
+    scope: q.get('scope'),
+  }),
+
+  'POST /api/ordered/entry': (q, body) => {
+    requireWrite();
+    const client = orderedClientFrom(q, body);
+    const opts = { scope: body.scope };
+
+    if (body.increment !== undefined) {
+      return client.incrementEntry(body.store, body.entry, body.increment, opts);
+    }
+    if (body.value === undefined) throw new HttpError(400, 'Missing "value" or "increment".');
+    if (body.create) return client.createEntry(body.store, body.entry, body.value, opts);
+    return client.updateEntry(body.store, body.entry, body.value, opts);
+  },
+
+  'DELETE /api/ordered/entry': (q) => {
+    requireWrite();
+    return orderedClientFrom(q).deleteEntry(q.get('store'), q.get('entry'), {
+      scope: q.get('scope'),
+    });
+  },
+
+  // Whole-store export. Reads only, so it stays allowed in read-only mode.
+  'GET /api/export': (q) => exportDataStore(clientFrom(q), q.get('datastore'), {
+    scope: q.get('scope'), prefix: q.get('prefix'),
+    maxEntries: q.get('max') ? Number(q.get('max')) : 2000,
+  }),
 };
 
 async function serveStatic(pathname, res) {
