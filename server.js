@@ -4,7 +4,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DataStoreClient, RobloxApiError, ValidationError } from './src/roblox.js';
 import { OrderedDataStoreClient } from './src/ordered.js';
-import { exportDataStore } from './src/export.js';
+import { exportDataStore, searchEntries } from './src/export.js';
+import { importDataStore } from './src/import.js';
 import { loadEnv } from './src/env.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -57,6 +58,7 @@ function orderedClientFrom(q, body = {}) {
   }
 
   return new OrderedDataStoreClient({ apiKey: process.env.ROBLOX_API_KEY, universeId });
+
 }
 
 function requireWrite() {
@@ -76,7 +78,7 @@ async function readBody(req) {
   let size = 0;
   for await (const c of req) {
     size += c.length;
-    if (size > 4 * 1024 * 1024) throw new HttpError(413, 'Body too large (4 MB max).');
+    if (size > 32 * 1024 * 1024) throw new HttpError(413, 'Body too large (32 MB max).');
     chunks.push(c);
   }
   const raw = Buffer.concat(chunks).toString('utf8');
@@ -187,6 +189,21 @@ const routes = {
     scope: q.get('scope'), prefix: q.get('prefix'),
     maxEntries: q.get('max') ? Number(q.get('max')) : 2000,
   }),
+
+  // Search inside values. Same cost as an export - it has to read every entry.
+  'GET /api/search': (q) => searchEntries(clientFrom(q), q.get('datastore'), {
+    scope: q.get('scope'), prefix: q.get('prefix'),
+    contains: q.get('contains'), caseSensitive: q.get('caseSensitive') === 'true',
+    maxEntries: q.get('max') ? Number(q.get('max')) : 2000,
+  }),
+
+  // Bulk import from a previous export.
+  'POST /api/import': (q, body) => {
+    requireWrite();
+    return importDataStore(clientFrom(q, body), body.datastore, body.payload ?? body, {
+      scope: body.scope, mode: body.mode, dryRun: Boolean(body.dryRun),
+    });
+  },
 };
 
 async function serveStatic(pathname, res) {
