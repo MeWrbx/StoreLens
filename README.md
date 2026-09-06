@@ -103,6 +103,10 @@ npm run lint
 Tests use `node:test`. To poke at the UI without a real universe, point
 `ROBLOX_API_BASE` at a local mock server.
 
+## Contact
+
+Found a bug or something's broken? Reach out on Discord: **officialacestar**
+
 ## License
 
 MIT
