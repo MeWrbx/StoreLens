@@ -1,4 +1,4 @@
-# rbx-datastore-viewer
+# StoreLens
 
 A small local dashboard for reading and editing Roblox DataStores. Runs on your
 machine, talks to the Open Cloud API, no Studio session required.
@@ -19,8 +19,8 @@ the JSON, fix it, save. Version history is right there if you need to roll back.
 Node 20 or newer. There are no dependencies, so there's nothing to install.
 
 ```
-git clone https://github.com/<you>/rbx-datastore-viewer.git
-cd rbx-datastore-viewer
+git clone https://github.com/<you>/StoreLens.git
+cd StoreLens
 cp .env.example .env
 npm start
 ```
