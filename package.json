@@ -1,7 +1,7 @@
 {
-  "name": "rbx-datastore-viewer",
+  "name": "storelens",
   "version": "0.1.0",
-  "description": "Local web dashboard for Roblox DataStores via the Open Cloud API",
+  "description": "StoreLens - local web dashboard for Roblox DataStores via the Open Cloud API",
   "type": "module",
   "main": "server.js",
   "scripts": {
@@ -10,7 +10,15 @@
     "test": "node --test test/*.test.js",
     "lint": "node --check server.js && node --check src/roblox.js && node --check src/env.js"
   },
-  "keywords": ["roblox", "datastore", "open-cloud", "dashboard"],
+  "keywords": [
+    "roblox",
+    "datastore",
+    "open-cloud",
+    "dashboard",
+    "storelens"
+  ],
   "license": "MIT",
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=20"
+  }
 }
