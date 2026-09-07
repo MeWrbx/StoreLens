@@ -29,12 +29,56 @@ Open http://localhost:3000.
 
 ### Getting an API key
 
-Go to [create.roblox.com/dashboard/credentials](https://create.roblox.com/dashboard/credentials)
-and create a key with the `universe-datastores` system enabled for your universe. You need `universe-datastores.objects:read` and `universe-datastores.objects:list` to browse entries within a data store, **plus `universe-datastores.control:list` to list the data stores themselves** (easy to miss - without it you get an "Insufficient scope" error on load). Add `:create`/`:update`/`:delete` under `objects` if you want to edit or remove entries. Under security you have to allow at least your own IP.
+1. Open the Creator Dashboard's
+   [Credentials page](https://create.roblox.com/dashboard/credentials), **API Keys**
+   tab, and create a key.
+2. Give it a name you'll recognise later.
+3. Under **Access Permissions**, choose the data stores system from the
+   **Select API System** menu and add the experience you want to reach. (You can
+   turn off **Restrict by Experience** instead, but a key scoped to one universe
+   does less damage if it leaks.)
+4. Tick the operations in **Select Operations** - see the table below.
+5. Under **Security**, add an IP or CIDR range. `0.0.0.0/0` allows any address,
+   which is the pragmatic choice on a home connection whose IP moves.
+6. Optionally set an expiry date.
+7. **Save & Generate key**. The key is shown exactly once - copy it now.
 
-Put the key in `.env` as `ROBLOX_API_KEY`. Your universe id is the number in the
-Creator Dashboard URL for the experience (not the place id) - `game.GameId` in
-Studio gives you the same thing.
+Which operations you need:
+
+| you want to | tick |
+|---|---|
+| see the list of data stores | `universe-datastores.control:list` |
+| see the keys inside one | `universe-datastores.objects:list` |
+| open a key and read its value | `universe-datastores.objects:read` |
+| save an edit or create a key | `objects:create` and `objects:update` |
+| delete a key | `objects:delete` |
+
+`control:list` is the one people miss. Without it the Data Stores column just
+stays empty on load, which looks like a broken key rather than a missing scope.
+If version history is the only thing that 403s, add the versions read operation
+too.
+
+If you only want to look around, leave the write operations off entirely and run
+with `READ_ONLY=true`. Two locks are better than one.
+
+Put the key in `.env` as `ROBLOX_API_KEY`. Never commit that file - `.gitignore`
+already has it.
+
+For the Ordered dropdown to work, add the ordered data stores system as a second
+API system on the same key. It's a separate service, so a key that reads standard
+stores fine will still 401 on ordered ones.
+
+### Finding your universe id
+
+In the Creator Dashboard, hover over the experience's thumbnail, click the **...**
+button, and pick **Copy Universe ID**.
+
+That is *not* the place id. The place id is the number in a place's configure URL
+and it will not work here. In Studio, `game.GameId` gives you the universe id and
+`game.PlaceId` gives you the place id.
+
+Put it in `.env` as `ROBLOX_UNIVERSE_ID` to have it loaded on startup, or paste it
+into the field in the header.
 
 ## Config
 
@@ -48,6 +92,23 @@ Studio gives you the same thing.
 | `ROBLOX_TIMEOUT_MS` | 15000 | request deadline, prevents a hung dashboard |
 | `ROBLOX_API_BASE` | Open Cloud | override for local testing |
 | `ROBLOX_ORDERED_API_BASE` | Open Cloud | same, for ordered stores |
+
+## When it doesn't work
+
+| what you see | what it usually is |
+|---|---|
+| Data Stores column empty, no error | key is missing `universe-datastores.control:list` |
+| 401 on every request | key wrong, expired, or your IP isn't in the key's allow list |
+| 401 only on the Ordered tab | the ordered data stores system isn't on the key |
+| 403 / "Insufficient scope" | the specific operation isn't ticked |
+| 404 on a store you can see in Studio | universe id is actually a place id, or the scope is wrong (blank means `global`) |
+| 412 when saving | someone wrote to that key after you loaded it - reload and redo the edit |
+| 429 | Open Cloud rate limit; the message tells you how long to wait |
+| 504 | the request outlived `ROBLOX_TIMEOUT_MS` |
+| "Cross-site request blocked" | something other than the dashboard called the server - that's the guard working |
+
+A data store that exists but has never been written to won't show up. Open Cloud
+only lists stores that hold at least one entry.
 
 ## A few things worth knowing
 
