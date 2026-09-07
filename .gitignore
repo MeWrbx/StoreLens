@@ -1,5 +1,8 @@
 node_modules/
 .env
 .env.local
+
+# Backups and import journals hold real player data. Never commit these.
+backups/
 *.log
 .DS_Store
