@@ -6,6 +6,8 @@ import { DataStoreClient, RobloxApiError, ValidationError } from './src/roblox.j
 import { OrderedDataStoreClient } from './src/ordered.js';
 import { exportDataStore, searchEntries } from './src/export.js';
 import { importDataStore } from './src/import.js';
+import { backupConfig, listBackups, runBackup, startScheduler } from './src/backup.js';
+import { listJournals, undoImport } from './src/undo.js';
 import { loadEnv } from './src/env.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -15,6 +17,7 @@ await loadEnv(path.join(__dirname, '.env'));
 const PORT = Number.isFinite(Number(process.env.PORT)) ? Number(process.env.PORT) : 3000;
 const HOST = process.env.HOST || '127.0.0.1';
 const READ_ONLY = process.env.READ_ONLY === 'true';
+const BACKUP = backupConfig();
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -114,6 +117,7 @@ const routes = {
     readOnly: READ_ONLY,
     hasApiKey: Boolean(process.env.ROBLOX_API_KEY),
     defaultUniverseId: process.env.ROBLOX_UNIVERSE_ID || null,
+    backups: { enabled: BACKUP.enabled, everyMinutes: BACKUP.enabled ? BACKUP.intervalMin : null },
   }),
 
   'GET /api/datastores': (q) => clientFrom(q).listDataStores({
@@ -203,6 +207,20 @@ const routes = {
       scope: body.scope, mode: body.mode, dryRun: Boolean(body.dryRun),
     });
   },
+
+  // What each import replaced, newest first.
+  'GET /api/imports': () => listJournals(),
+
+  // Put an import back. This writes, so read-only blocks it.
+  'POST /api/import/undo': (q, body) => {
+    requireWrite();
+    return undoImport(clientFrom(q, body), body.id, { dryRun: Boolean(body.dryRun) });
+  },
+
+  // Backups only read from Open Cloud, so they stay allowed in read-only mode.
+  'GET /api/backups': () => listBackups(BACKUP),
+
+  'POST /api/backups/run': (q, body) => runBackup(clientFrom(q, body), { config: BACKUP }),
 };
 
 async function serveStatic(pathname, res) {
@@ -255,6 +273,22 @@ server.listen(PORT, HOST, () => {
   console.log(`StoreLens listening on http://${HOST}:${server.address().port}`);
   if (READ_ONLY) console.log('read-only mode: writes and deletes are disabled');
   if (!process.env.ROBLOX_API_KEY) console.warn('ROBLOX_API_KEY is not set, see .env.example');
+
+  if (BACKUP.enabled) {
+    try {
+      startScheduler(() => new DataStoreClient({
+        apiKey: process.env.ROBLOX_API_KEY,
+        universeId: process.env.ROBLOX_UNIVERSE_ID,
+      }), { config: BACKUP });
+      const which = BACKUP.stores.length ? BACKUP.stores.join(', ') : 'every store';
+      console.log(`backups: ${which} every ${BACKUP.intervalMin} min -> ${BACKUP.dir}/ (keeping ${BACKUP.keep})`);
+      if (!process.env.ROBLOX_UNIVERSE_ID) {
+        console.warn('backups need ROBLOX_UNIVERSE_ID in .env, the header field is not enough');
+      }
+    } catch (err) {
+      console.error(`backups disabled: ${err.message}`);
+    }
+  }
 });
 
 export default server;
