@@ -135,7 +135,16 @@ put it on a server.
 Because it binds to localhost, any website you have open in the same browser could
 otherwise talk to it. The server therefore rejects requests carrying a foreign
 `Origin` or `Sec-Fetch-Site: cross-site`, and requires `Content-Type: application/json`
-on writes. Keep that guard in place if you fork this.
+on writes.
+
+It also refuses any request whose `Host` is not `localhost`, `127.0.0.1` or
+`[::1]`. Comparing `Origin` against `Host` is not enough on its own: in a DNS
+rebinding attack a page on someone else's domain points that domain at
+127.0.0.1, and then both headers say the attacker's name and agree with each
+other. Pinning the host is what actually closes that. The practical cost is that
+a hostname you mapped to 127.0.0.1 yourself will get a 403 - use localhost.
+
+Keep all of that in place if you fork this.
 
 If you're touching a live game, run with `READ_ONLY=true` and only turn it off for
 the minute you actually need to fix something.
@@ -213,8 +222,20 @@ keep running in read-only mode, because reading is all they do.
 
 Files are named `<store>--<timestamp>.json`, and retention is worked out per
 store from that timestamp, so a store called `Player--Data` keeps its own set
-and cannot eat the backups of one called `Player`. Anything else you leave in
-the directory is ignored rather than counted and pruned.
+and cannot eat the backups of one called `Player`. Store names that are not
+valid filenames get a short `~hash` suffix, so `Player Data` and `Player_Data`
+stay separate files instead of quietly overwriting each other. Anything else you
+leave in the directory is ignored rather than counted and pruned.
+
+A run that reads nothing is treated as a failure, not as an empty store: no file
+is written and nothing is pruned. That matters because Open Cloud rate limiting
+comes back as unreadable keys rather than as an error, so without this a few
+throttled runs would replace every good backup with an empty one. Retention only
+ever touches stores that got a fresh, usable file in that same run.
+
+`BACKUP_MAX_ENTRIES` and `BACKUP_INTERVAL_MIN` are checked at startup. A value
+the exporter would reject stops backups from starting and says why, instead of
+failing quietly on every run.
 
 `POST /api/backups/run` triggers one immediately, `GET /api/backups` lists what
 is on disk. `BACKUP_DIR` is git-ignored - those files are real player saves.
@@ -240,9 +261,17 @@ Three things worth being clear about:
   written again in the meantime. The flip side is that it overwrites anything
   newer, so undo while the mistake is still fresh.
 
-Each journal records the universe it was made against. Undo refuses to run if
-the universe in the header is a different one, and the Undo button only offers
-imports belonging to the universe you are looking at.
+Each row in the journal records the scope the import actually wrote to, which is
+not always the scope in the header: an export file carries a scope per entry and
+that wins. Undo follows the row, so it cannot edit or delete a key in a scope
+the import never touched.
+
+Each journal also records the universe it was made against. Undo refuses to run
+if the universe in the header is a different one, and the Undo button only
+offers imports belonging to the universe you are looking at.
+
+The journal is written before the first key is overwritten and flushed as the
+import runs, so killing the process halfway still leaves you something to undo.
 
 If the journal is gone (you cleaned out `backups/`), undo has nothing to replay
 and says so. The version history is still there.
