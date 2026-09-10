@@ -211,6 +211,11 @@ Two deliberate choices: the first run happens one interval after startup, not at
 startup, or `node --watch` would hit Open Cloud on every file save. And backups
 keep running in read-only mode, because reading is all they do.
 
+Files are named `<store>--<timestamp>.json`, and retention is worked out per
+store from that timestamp, so a store called `Player--Data` keeps its own set
+and cannot eat the backups of one called `Player`. Anything else you leave in
+the directory is ignored rather than counted and pruned.
+
 `POST /api/backups/run` triggers one immediately, `GET /api/backups` lists what
 is on disk. `BACKUP_DIR` is git-ignored - those files are real player saves.
 
@@ -224,12 +229,20 @@ It does a dry pass first and tells you exactly what will happen: how many
 entries go back to their old value, how many the import created and will be
 deleted. Then it asks.
 
-Two things worth being clear about:
+Three things worth being clear about:
 
 - Undo does not rewind history. It writes the old value back as a **new**
   version. The import is still in the version list.
 - Keys the import created get deleted, which on Open Cloud is a soft delete, so
   they are recoverable from the version list for about 30 days either way.
+- There is no `matchVersion` on an undo, on purpose. Undo is what you reach for
+  when the import was wrong, and it should not fail because the bad value got
+  written again in the meantime. The flip side is that it overwrites anything
+  newer, so undo while the mistake is still fresh.
+
+Each journal records the universe it was made against. Undo refuses to run if
+the universe in the header is a different one, and the Undo button only offers
+imports belonging to the universe you are looking at.
 
 If the journal is gone (you cleaned out `backups/`), undo has nothing to replay
 and says so. The version history is still there.
