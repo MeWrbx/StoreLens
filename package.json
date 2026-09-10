@@ -1,6 +1,6 @@
 {
   "name": "storelens",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "StoreLens - local web dashboard for Roblox DataStores via the Open Cloud API",
   "type": "module",
   "main": "server.js",
