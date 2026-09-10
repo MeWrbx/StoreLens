@@ -634,7 +634,7 @@ function setUndoable(entry) {
 // The newest import that has not been undone yet is the one the button offers.
 async function refreshUndo() {
   try {
-    const { imports } = await api('/api/imports');
+    const { imports } = await api('/api/imports?' + qs());
     const open = (imports || []).find((i) => !i.undoneAt);
     setUndoable(open ? { id: open.id, datastore: open.datastore, rows: open.rows } : null);
   } catch {
