@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import net from 'node:net';
 
 // A stand-in for Open Cloud so the tests never touch the real API.
 const hits = [];
@@ -123,4 +124,36 @@ test('static serving stays inside public/', async () => {
 test('an unknown non-GET route is a 405', async () => {
   const res = await fetch(`${base}/api/nope`, { method: 'PUT' });
   assert.equal(res.status, 405);
+});
+
+// A rebinding attack controls both Origin and Host, so they agree and the
+// same-origin comparison passes. Pinning Host to loopback is what stops it.
+const rawGet = (headers, path = '/api/datastores?universeId=77') => new Promise((resolve, reject) => {
+  const socket = net.connect(server.address().port, '127.0.0.1', () => {
+    socket.write(`GET ${path} HTTP/1.1\r\n${headers.join('\r\n')}\r\nConnection: close\r\n\r\n`);
+  });
+  let buf = '';
+  socket.on('data', (d) => { buf += d; });
+  socket.on('end', () => resolve(Number(buf.split(' ')[1])));
+  socket.on('error', reject);
+});
+
+test('a request addressed to someone else\'s hostname is refused', async () => {
+  const before = hits.length;
+
+  assert.equal(await rawGet([
+    'Host: evil.example:1234',
+    'Origin: http://evil.example:1234',
+    'Sec-Fetch-Site: same-origin',
+  ]), 403, 'matching Origin and Host is not enough');
+
+  assert.equal(await rawGet(['Host: evil.example:1234']), 403);
+  assert.equal(hits.length, before, 'nothing reached Open Cloud');
+});
+
+test('the loopback names people actually use still work', async () => {
+  const port = server.address().port;
+  for (const host of [`localhost:${port}`, `127.0.0.1:${port}`, `[::1]:${port}`]) {
+    assert.equal(await rawGet([`Host: ${host}`]), 200, host);
+  }
 });
