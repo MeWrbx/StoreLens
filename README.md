@@ -92,6 +92,12 @@ into the field in the header.
 | `ROBLOX_TIMEOUT_MS` | 15000 | request deadline, prevents a hung dashboard |
 | `ROBLOX_API_BASE` | Open Cloud | override for local testing |
 | `ROBLOX_ORDERED_API_BASE` | Open Cloud | same, for ordered stores |
+| `BACKUP_INTERVAL_MIN` | 0 | 0 is off, minimum 5 |
+| `BACKUP_DIR` | `backups` | git-ignored, it holds real player data |
+| `BACKUP_STORES` | all | comma separated |
+| `BACKUP_KEEP` | 7 | files kept per store |
+| `BACKUP_MAX_ENTRIES` | 2000 | same cap as a manual export |
+| `UNDO_DIR` | `backups/undo` | what each import replaced |
 
 ## When it doesn't work
 
@@ -150,6 +156,10 @@ GET    /api/version?datastore=&key=&versionId=
 GET    /api/export?datastore=&prefix=&max=
 GET    /api/search?datastore=&prefix=&contains=&caseSensitive=&max=
 POST   /api/import           {datastore, payload, mode, dryRun}
+GET    /api/imports
+POST   /api/import/undo      {id, dryRun}
+GET    /api/backups
+POST   /api/backups/run
 
 GET    /api/ordered/entries?store=&limit=&pageToken=&ascending=
 GET    /api/ordered/entry?store=&entry=
@@ -187,6 +197,43 @@ asks once more before touching anything. Blocked entirely in read-only mode.
 The file can be a whole export or just its `entries` array. Limit is 5000 rows
 per file, and writes go one at a time on purpose - this touches live player saves.
 
+## Scheduled backups
+
+Set `BACKUP_INTERVAL_MIN` and the server exports your stores to `BACKUP_DIR` on
+a timer, keeping the newest `BACKUP_KEEP` files per store and dropping the rest.
+Leave `BACKUP_STORES` empty to back up every store the key can see, or list the
+ones you care about.
+
+It is the same walk as clicking Export, so the same cap applies and the same
+rate limit gets spent. Pick an interval you would be happy paying for every day.
+
+Two deliberate choices: the first run happens one interval after startup, not at
+startup, or `node --watch` would hit Open Cloud on every file save. And backups
+keep running in read-only mode, because reading is all they do.
+
+`POST /api/backups/run` triggers one immediately, `GET /api/backups` lists what
+is on disk. `BACKUP_DIR` is git-ignored - those files are real player saves.
+
+## Undoing an import
+
+Before an import overwrites a key, StoreLens notes which version was there. That
+note is what Undo import replays.
+
+The button sits next to the value search and lights up once an import has run.
+It does a dry pass first and tells you exactly what will happen: how many
+entries go back to their old value, how many the import created and will be
+deleted. Then it asks.
+
+Two things worth being clear about:
+
+- Undo does not rewind history. It writes the old value back as a **new**
+  version. The import is still in the version list.
+- Keys the import created get deleted, which on Open Cloud is a soft delete, so
+  they are recoverable from the version list for about 30 days either way.
+
+If the journal is gone (you cleaned out `backups/`), undo has nothing to replay
+and says so. The version history is still there.
+
 ## Finding a key by its contents
 
 Open Cloud can only filter by key prefix, so the "value contains" box reads the
@@ -202,8 +249,8 @@ diff. Useful for "what did this player's save look like before the patch".
 
 ## TODO
 
-- Scheduled backups instead of a manual export click
-- Undo for an import, using the versions it replaced
+- Restore straight from a backup file, without the export/import round trip
+- Diff a backup against what is live right now
 
 PRs welcome.
 
