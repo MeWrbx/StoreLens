@@ -1,4 +1,5 @@
 import { required, ValidationError } from './http.js';
+import { journalId, undoDir, writeJournal } from './undo.js';
 
 // Writes go one at a time. An import can touch thousands of live player saves,
 // so being slow and predictable beats being fast.
@@ -33,15 +34,29 @@ function normalise(payload) {
   });
 }
 
+// What is live at this key right now: its version id, or null if it is absent.
+async function currentVersion(client, datastoreName, key, scope) {
+  try {
+    const { meta } = await client.getEntry(datastoreName, key, { scope });
+    return { exists: true, version: meta?.version ?? null };
+  } catch (err) {
+    if (err.status === 404) return { exists: false, version: null };
+    throw err;
+  }
+}
+
 /**
  * Write an exported dump back into a data store.
  *
  * mode 'skip-existing' only creates keys that are missing - the safe default.
  * mode 'overwrite' replaces whatever is there.
  * dryRun reports what would happen without writing anything.
+ *
+ * Unless recordUndo is false, every write is noted first, so the whole import
+ * can be put back later with undoImport().
  */
 export async function importDataStore(client, datastoreName, payload, {
-  scope, mode = 'skip-existing', dryRun = false,
+  scope, mode = 'skip-existing', dryRun = false, recordUndo = true, dir = undoDir(), now = new Date(),
 } = {}) {
   required(datastoreName, 'datastore');
 
@@ -53,24 +68,23 @@ export async function importDataStore(client, datastoreName, payload, {
   const written = [];
   const skipped = [];
   const failures = [];
+  const journalRows = [];
 
   for (const row of rows) {
     const keyScope = row.scope ?? scope ?? undefined;
 
     try {
-      if (mode === 'skip-existing') {
-        let exists = true;
-        try {
-          await client.getEntry(datastoreName, row.key, { scope: keyScope });
-        } catch (err) {
-          if (err.status === 404) exists = false;
-          else throw err;
-        }
+      // Both modes need to know what is there: one to decide whether to skip,
+      // the other to be able to undo. Overwriting without recording is the only
+      // case that can skip the read.
+      const needsRead = mode === 'skip-existing' || recordUndo;
+      const live = needsRead
+        ? await currentVersion(client, datastoreName, row.key, keyScope)
+        : { exists: null, version: null };
 
-        if (exists) {
-          skipped.push({ key: row.key, reason: 'already exists' });
-          continue;
-        }
+      if (mode === 'skip-existing' && live.exists) {
+        skipped.push({ key: row.key, reason: 'already exists' });
+        continue;
       }
 
       if (!dryRun) {
@@ -79,13 +93,15 @@ export async function importDataStore(client, datastoreName, payload, {
           userIds: row.userIds,
         });
       }
+
       written.push(row.key);
+      journalRows.push({ key: row.key, previousVersion: live.version });
     } catch (err) {
       failures.push({ key: row.key, error: err.message });
     }
   }
 
-  return {
+  const result = {
     datastore: datastoreName,
     scope: scope || null,
     mode,
@@ -96,5 +112,26 @@ export async function importDataStore(client, datastoreName, payload, {
     failed: failures.length,
     skippedKeys: skipped,
     failures,
+    undoId: null,
   };
+
+  if (!dryRun && recordUndo && journalRows.length) {
+    const journal = {
+      id: journalId(datastoreName, now),
+      datastore: datastoreName,
+      scope: scope || null,
+      mode,
+      at: now.toISOString(),
+      rows: journalRows,
+    };
+    try {
+      await writeJournal(journal, dir);
+      result.undoId = journal.id;
+    } catch (err) {
+      // Losing the journal must not fail an import that already went through.
+      result.undoError = err.message;
+    }
+  }
+
+  return result;
 }
