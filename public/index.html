@@ -111,6 +111,7 @@
     </div>
     <div class="tools">
       <input id="valueFilter" placeholder="value contains&hellip;">
+      <button id="undoBtn" title="Put the last import back" disabled>Undo import</button>
     </div>
     <input type="file" id="importFile" accept="application/json,.json" hidden>
     <div class="list" id="keyList"><p class="empty">Pick a data store first.</p></div>
@@ -125,7 +126,8 @@
 const $ = (id) => document.getElementById(id);
 const state = { universeId: '', scope: '', datastore: null, key: null,
                 dsCursor: null, keyCursor: null, meta: null, readOnly: false,
-                mode: 'standard', orderedStore: null, orderedToken: null, diffPick: [] };
+                mode: 'standard', orderedStore: null, orderedToken: null, diffPick: [],
+                lastImport: null };
 
 function toast(msg, kind = '') {
   document.querySelector('.toast')?.remove();
@@ -607,13 +609,79 @@ async function runImport(file) {
 
     let msg = `Imported ${result.written}, skipped ${result.skipped}.`;
     if (result.failed) msg += ` ${result.failed} failed.`;
+    if (result.undoId) msg += ' Undo is available.';
     toast(msg, result.failed ? 'err' : 'ok');
+
+    setUndoable(result.undoId ? { id: result.undoId, datastore: result.datastore, rows: result.written } : null);
     loadKeys(false);
   } catch (e) {
     toast(e.message, 'err');
   } finally {
     btn.disabled = state.readOnly;
     btn.textContent = 'Import';
+  }
+}
+
+function setUndoable(entry) {
+  state.lastImport = entry;
+  const btn = $('undoBtn');
+  btn.disabled = state.readOnly || !entry;
+  btn.title = entry
+    ? `Put back the ${entry.rows} entries the last import wrote into "${entry.datastore}"`
+    : 'Nothing to undo';
+}
+
+// The newest import that has not been undone yet is the one the button offers.
+async function refreshUndo() {
+  try {
+    const { imports } = await api('/api/imports');
+    const open = (imports || []).find((i) => !i.undoneAt);
+    setUndoable(open ? { id: open.id, datastore: open.datastore, rows: open.rows } : null);
+  } catch {
+    setUndoable(null);
+  }
+}
+
+async function runUndo() {
+  const entry = state.lastImport;
+  if (!entry) return;
+
+  const btn = $('undoBtn');
+  const post = (dryRun) => api('/api/import/undo', {
+    method: 'POST',
+    body: JSON.stringify({ universeId: state.universeId, id: entry.id, dryRun }),
+  });
+
+  btn.disabled = true;
+  btn.textContent = 'Checking\u2026';
+
+  try {
+    // Say exactly what will happen before touching anything.
+    const plan = await post(true);
+
+    const lines = [`Undo the import into "${plan.datastore}"?`, ''];
+    if (plan.restored) lines.push(`${plan.restored} entries go back to the value they had.`);
+    if (plan.removed) lines.push(`${plan.removed} entries the import created get deleted.`);
+    if (plan.failed) lines.push(`${plan.failed} could not be read back and will be skipped.`);
+    lines.push('', 'This writes to live data.');
+
+    if (!confirm(lines.join('\n'))) return toast('Undo cancelled.');
+
+    btn.textContent = 'Undoing\u2026';
+    const result = await post(false);
+
+    let msg = `Restored ${result.restored}, deleted ${result.removed}.`;
+    if (result.failed) msg += ` ${result.failed} failed.`;
+    toast(msg, result.failed ? 'err' : 'ok');
+
+    if (!result.failed) setUndoable(null);
+    loadKeys(false);
+    if (state.key) loadEntry(state.key);
+  } catch (e) {
+    toast(e.message, 'err');
+  } finally {
+    btn.textContent = 'Undo import';
+    btn.disabled = state.readOnly || !state.lastImport;
   }
 }
 
@@ -786,6 +854,7 @@ $('importFile').onchange = (e) => {
   if (file) runImport(file);
 };
 $('valueFilter').onchange = () => loadKeys(false);
+$('undoBtn').onclick = runUndo;
 $('storeMode').onchange = (e) => setMode(e.target.value);
 $('universe').addEventListener('keydown', (e) => e.key === 'Enter' && reload());
 $('orderedStore').addEventListener('keydown', (e) => e.key === 'Enter' && loadOrderedEntries(false));
@@ -794,6 +863,13 @@ api('/api/health').then((h) => {
   state.readOnly = h.readOnly;
   $('mode').textContent = h.readOnly ? 'read-only' : (h.hasApiKey ? 'ready' : 'no api key');
   $('importBtn').disabled = h.readOnly;
+  $('undoBtn').disabled = true;
+
+  if (h.backups && h.backups.enabled) {
+    $('mode').title = `Backups run every ${h.backups.everyMinutes} min`;
+  }
+
+  refreshUndo();
   if (h.defaultUniverseId) {
     $('universe').value = h.defaultUniverseId;
     loadDataStores(false);
