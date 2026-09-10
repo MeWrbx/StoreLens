@@ -18,6 +18,7 @@ const PORT = Number.isFinite(Number(process.env.PORT)) ? Number(process.env.PORT
 const HOST = process.env.HOST || '127.0.0.1';
 const READ_ONLY = process.env.READ_ONLY === 'true';
 const BACKUP = backupConfig();
+let backupsRunning = false;
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -91,7 +92,23 @@ async function readBody(req) {
 // visits in the same browser must never be able to drive it. Browsers always
 // attach Origin to cross-site writes, and a JSON content-type forces a preflight
 // that the missing OPTIONS route rejects.
+// Only names that genuinely mean this machine. Comparing Origin against Host is
+// not enough on its own: in a DNS rebinding attack the attacker controls both,
+// so they match and the check passes. Pinning the Host to loopback is what
+// actually stops a page on evil.example from talking to this server.
+function hostIsLoopback(host) {
+  if (!host) return false;
+  const name = host.startsWith('[')
+    ? host.slice(0, host.indexOf(']') + 1)
+    : host.split(':')[0];
+  return name === 'localhost' || name === '127.0.0.1' || name === '[::1]' || name === '::1';
+}
+
 function guardCrossSite(req) {
+  if (!hostIsLoopback(req.headers.host)) {
+    throw new HttpError(403, `Refusing a request addressed to "${req.headers.host}". Use localhost.`);
+  }
+
   const origin = req.headers.origin;
   if (origin) {
     let originHost = null;
@@ -117,7 +134,11 @@ const routes = {
     readOnly: READ_ONLY,
     hasApiKey: Boolean(process.env.ROBLOX_API_KEY),
     defaultUniverseId: process.env.ROBLOX_UNIVERSE_ID || null,
-    backups: { enabled: BACKUP.enabled, everyMinutes: BACKUP.enabled ? BACKUP.intervalMin : null },
+    backups: {
+      enabled: backupsRunning,
+      everyMinutes: backupsRunning ? BACKUP.intervalMin : null,
+      problems: BACKUP.errors,
+    },
   }),
 
   'GET /api/datastores': (q) => clientFrom(q).listDataStores({
@@ -276,12 +297,17 @@ server.listen(PORT, HOST, () => {
   if (READ_ONLY) console.log('read-only mode: writes and deletes are disabled');
   if (!process.env.ROBLOX_API_KEY) console.warn('ROBLOX_API_KEY is not set, see .env.example');
 
+  if (BACKUP.requested && !BACKUP.enabled) {
+    for (const problem of BACKUP.errors) console.error(`backups disabled: ${problem}`);
+  }
+
   if (BACKUP.enabled) {
     try {
       startScheduler(() => new DataStoreClient({
         apiKey: process.env.ROBLOX_API_KEY,
         universeId: process.env.ROBLOX_UNIVERSE_ID,
       }), { config: BACKUP });
+      backupsRunning = true;
       const which = BACKUP.stores.length ? BACKUP.stores.join(', ') : 'every store';
       console.log(`backups: ${which} every ${BACKUP.intervalMin} min -> ${BACKUP.dir}/ (keeping ${BACKUP.keep})`);
       if (!process.env.ROBLOX_UNIVERSE_ID) {
