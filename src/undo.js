@@ -15,7 +15,10 @@ export function undoDir(env = process.env) {
 }
 
 export function journalId(datastore, now = new Date()) {
-  return `${safeName(datastore)}--${stamp(now)}`;
+  // Two imports into the same store inside the same millisecond would otherwise
+  // land on the same filename and the second would erase the first's record.
+  const salt = Math.random().toString(36).slice(2, 6);
+  return `${safeName(datastore)}--${stamp(now)}-${salt}`;
 }
 
 export async function writeJournal(journal, dir = undoDir()) {
@@ -95,7 +98,6 @@ export async function readJournal(id, dir = undoDir()) {
  */
 export async function undoImport(client, id, { dir = undoDir(), dryRun = false } = {}) {
   const journal = await readJournal(id, dir);
-  const scope = journal.scope ?? undefined;
 
   // Writing one universe's old values into another one would be a bad day.
   if (journal.universeId && String(client.universeId) !== String(journal.universeId)) {
@@ -109,6 +111,11 @@ export async function undoImport(client, id, { dir = undoDir(), dryRun = false }
   const failures = [];
 
   for (const row of journal.rows) {
+    // Each row carries the scope the import actually wrote to. A file can set a
+    // scope per entry, so the run's scope is not necessarily the row's, and
+    // undoing in the wrong scope would edit or delete a key nobody touched.
+    const scope = row.scope ?? journal.scope ?? undefined;
+
     try {
       if (row.previousVersion) {
         const { value } = await client.getVersion(
