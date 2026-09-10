@@ -70,6 +70,29 @@ export async function importDataStore(client, datastoreName, payload, {
   const failures = [];
   const journalRows = [];
 
+  // The journal is opened before the first write and flushed as we go. Writing
+  // it only at the end would mean a crash halfway through a 5000 row import
+  // leaves live saves overwritten with no record of what they were.
+  const journal = {
+    id: journalId(datastoreName, now),
+    universeId: client.universeId ?? null,
+    datastore: datastoreName,
+    scope: scope || null,
+    mode,
+    at: now.toISOString(),
+    rows: journalRows,
+  };
+  const keepingJournal = !dryRun && recordUndo;
+  let journalError = null;
+  let sinceFlush = 0;
+
+  const flush = async () => {
+    sinceFlush = 0;
+    try { await writeJournal(journal, dir); } catch (err) { journalError = err.message; }
+  };
+
+  if (keepingJournal) await flush();
+
   for (const row of rows) {
     const keyScope = row.scope ?? scope ?? undefined;
 
@@ -95,11 +118,20 @@ export async function importDataStore(client, datastoreName, payload, {
       }
 
       written.push(row.key);
-      journalRows.push({ key: row.key, previousVersion: live.version, userIds: live.userIds });
+      journalRows.push({
+        key: row.key,
+        scope: keyScope ?? null,
+        previousVersion: live.version,
+        userIds: live.userIds,
+      });
+
+      if (keepingJournal && ++sinceFlush >= 25) await flush();
     } catch (err) {
       failures.push({ key: row.key, error: err.message });
     }
   }
+
+  if (keepingJournal) await flush();
 
   const result = {
     datastore: datastoreName,
@@ -112,27 +144,11 @@ export async function importDataStore(client, datastoreName, payload, {
     failed: failures.length,
     skippedKeys: skipped,
     failures,
-    undoId: null,
+    undoId: keepingJournal && journalRows.length && !journalError ? journal.id : null,
   };
 
-  if (!dryRun && recordUndo && journalRows.length) {
-    const journal = {
-      id: journalId(datastoreName, now),
-      universeId: client.universeId ?? null,
-      datastore: datastoreName,
-      scope: scope || null,
-      mode,
-      at: now.toISOString(),
-      rows: journalRows,
-    };
-    try {
-      await writeJournal(journal, dir);
-      result.undoId = journal.id;
-    } catch (err) {
-      // Losing the journal must not fail an import that already went through.
-      result.undoError = err.message;
-    }
-  }
+  // Losing the journal must not fail an import that already went through.
+  if (journalError) result.undoError = journalError;
 
   return result;
 }
