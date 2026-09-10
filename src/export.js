@@ -11,22 +11,25 @@ function checkCap(maxEntries, name = 'max') {
   return cap;
 }
 
-// Page through the key list until the cap is hit.
+// Page through the key list until the cap is hit. `more` says whether the store
+// still had keys we did not take - that, not "we hit exactly the cap", is what
+// truncation means. A store holding exactly `cap` keys is complete.
 async function collectKeys(client, datastoreName, { scope, prefix, cap }) {
   const keys = [];
   let cursor;
+  let more = false;
 
   do {
     const page = await client.listKeys(datastoreName, { scope, prefix, cursor, limit: 100 });
     cursor = page?.nextPageCursor || null;
 
     for (const k of page?.keys || []) {
-      if (keys.length >= cap) { cursor = null; break; }
+      if (keys.length >= cap) { more = true; cursor = null; break; }
       keys.push({ key: k.key, scope: k.scope ?? scope ?? null });
     }
   } while (cursor);
 
-  return keys;
+  return { keys, more };
 }
 
 // Read every key with a small worker pool. `onEntry` decides what to keep.
@@ -69,7 +72,7 @@ export async function exportDataStore(client, datastoreName, {
   required(datastoreName, 'datastore');
   const cap = checkCap(maxEntries);
 
-  const keys = await collectKeys(client, datastoreName, { scope, prefix, cap });
+  const { keys, more } = await collectKeys(client, datastoreName, { scope, prefix, cap });
   const entries = new Array(keys.length);
   const failures = await readEntries(client, datastoreName, keys, (i, row) => { entries[i] = row; });
   const rows = entries.filter(Boolean);
@@ -80,7 +83,7 @@ export async function exportDataStore(client, datastoreName, {
     prefix: prefix || null,
     exportedAt: new Date().toISOString(),
     count: rows.length,
-    truncated: keys.length >= cap,
+    truncated: more,
     failures,
     entries: rows,
   };
@@ -96,7 +99,7 @@ export async function searchEntries(client, datastoreName, {
   const cap = checkCap(maxEntries);
 
   const needle = caseSensitive ? String(contains) : String(contains).toLowerCase();
-  const keys = await collectKeys(client, datastoreName, { scope, prefix, cap });
+  const { keys, more } = await collectKeys(client, datastoreName, { scope, prefix, cap });
 
   const matches = new Array(keys.length);
   const failures = await readEntries(client, datastoreName, keys, (i, row) => {
@@ -115,7 +118,7 @@ export async function searchEntries(client, datastoreName, {
     caseSensitive,
     scanned: keys.length,
     count: rows.length,
-    truncated: keys.length >= cap,
+    truncated: more,
     failures,
     entries: rows,
   };
