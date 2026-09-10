@@ -38,9 +38,9 @@ function normalise(payload) {
 async function currentVersion(client, datastoreName, key, scope) {
   try {
     const { meta } = await client.getEntry(datastoreName, key, { scope });
-    return { exists: true, version: meta?.version ?? null };
+    return { exists: true, version: meta?.version ?? null, userIds: meta?.userIds ?? [] };
   } catch (err) {
-    if (err.status === 404) return { exists: false, version: null };
+    if (err.status === 404) return { exists: false, version: null, userIds: [] };
     throw err;
   }
 }
@@ -80,7 +80,7 @@ export async function importDataStore(client, datastoreName, payload, {
       const needsRead = mode === 'skip-existing' || recordUndo;
       const live = needsRead
         ? await currentVersion(client, datastoreName, row.key, keyScope)
-        : { exists: null, version: null };
+        : { exists: null, version: null, userIds: [] };
 
       if (mode === 'skip-existing' && live.exists) {
         skipped.push({ key: row.key, reason: 'already exists' });
@@ -95,7 +95,7 @@ export async function importDataStore(client, datastoreName, payload, {
       }
 
       written.push(row.key);
-      journalRows.push({ key: row.key, previousVersion: live.version });
+      journalRows.push({ key: row.key, previousVersion: live.version, userIds: live.userIds });
     } catch (err) {
       failures.push({ key: row.key, error: err.message });
     }
@@ -118,6 +118,7 @@ export async function importDataStore(client, datastoreName, payload, {
   if (!dryRun && recordUndo && journalRows.length) {
     const journal = {
       id: journalId(datastoreName, now),
+      universeId: client.universeId ?? null,
       datastore: datastoreName,
       scope: scope || null,
       mode,
