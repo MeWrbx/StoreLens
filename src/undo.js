@@ -25,16 +25,17 @@ export async function writeJournal(journal, dir = undoDir()) {
   return file;
 }
 
-export async function listJournals(dir = undoDir()) {
+export async function listJournals(dir = undoDir(), { universeId = null } = {}) {
   let names;
   try { names = await fs.readdir(dir); } catch { return { dir, imports: [] }; }
 
   const imports = [];
-  for (const name of names.filter((n) => n.endsWith('.json')).sort().reverse()) {
+  for (const name of names.filter((n) => n.endsWith('.json'))) {
     try {
       const j = JSON.parse(await fs.readFile(path.join(dir, name), 'utf8'));
       imports.push({
         id: j.id,
+        universeId: j.universeId ?? null,
         datastore: j.datastore,
         scope: j.scope ?? null,
         mode: j.mode,
@@ -44,7 +45,20 @@ export async function listJournals(dir = undoDir()) {
       });
     } catch { /* half-written or hand-edited, skip it */ }
   }
-  return { dir, imports };
+
+  // Sort by when the import ran, not by filename. The id starts with the store
+  // name, so filename order would offer you an import into "AStore" ahead of a
+  // newer one into "ZStore".
+  imports.sort((a, b) => String(b.at).localeCompare(String(a.at)));
+
+  // A journal from another universe must not be offered as "the last import".
+  // Journals written before universes were recorded have null and stay visible.
+  const wanted = universeId == null ? null : String(universeId);
+  const filtered = wanted === null
+    ? imports
+    : imports.filter((i) => i.universeId === null || i.universeId === wanted);
+
+  return { dir, imports: filtered };
 }
 
 export async function readJournal(id, dir = undoDir()) {
@@ -74,10 +88,21 @@ export async function readJournal(id, dir = undoDir()) {
  *
  * Rows carrying a `previousVersion` get that version's value written back.
  * Rows without one were created by the import, so they get deleted.
+ *
+ * There is no matchVersion here on purpose: undo is what you reach for when the
+ * import was wrong, and it should not fail because the bad value was written
+ * again afterwards. That does mean it overwrites anything newer, so undo soon.
  */
 export async function undoImport(client, id, { dir = undoDir(), dryRun = false } = {}) {
   const journal = await readJournal(id, dir);
   const scope = journal.scope ?? undefined;
+
+  // Writing one universe's old values into another one would be a bad day.
+  if (journal.universeId && String(client.universeId) !== String(journal.universeId)) {
+    throw new ValidationError(
+      `That import was made against universe ${journal.universeId}, but this is ${client.universeId}.`,
+    );
+  }
 
   const restored = [];
   const removed = [];
@@ -90,7 +115,11 @@ export async function undoImport(client, id, { dir = undoDir(), dryRun = false }
           journal.datastore, row.key, row.previousVersion, { scope },
         );
         if (!dryRun) {
-          await client.setEntry(journal.datastore, row.key, value, { scope });
+          // Carry the user ids back too, or the restored entry loses the
+          // association Roblox needs for right-to-erasure requests.
+          await client.setEntry(journal.datastore, row.key, value, {
+            scope, userIds: row.userIds,
+          });
         }
         restored.push(row.key);
       } else {
