@@ -43,6 +43,13 @@ async function pickStores(client, cfg) {
   return list.map((d) => d?.name).filter(Boolean);
 }
 
+// Our own files look like `<store>--<stamp>.json`. Anchoring on the stamp at
+// the end matters: splitting on the first `--` would put "Player--Data" and
+// "Player" in the same bucket and delete one store's backups to make room for
+// the other's. It also means anything else living in the directory is left
+// alone rather than counted and pruned.
+const BACKUP_FILE = /^(.+)--(\d{4}-\d{2}-\d{2}T[0-9-]+Z)\.json$/;
+
 // Keep the newest `keep` files per store. The timestamp sorts lexically, so
 // plain string order is chronological order.
 export async function prune(cfg = backupConfig()) {
@@ -51,8 +58,9 @@ export async function prune(cfg = backupConfig()) {
 
   const byStore = new Map();
   for (const name of names) {
-    if (!name.endsWith('.json')) continue;
-    const store = name.split('--')[0];
+    const match = BACKUP_FILE.exec(name);
+    if (!match) continue;
+    const store = match[1];
     if (!byStore.has(store)) byStore.set(store, []);
     byStore.get(store).push(name);
   }
@@ -97,7 +105,7 @@ export async function listBackups(cfg = backupConfig()) {
   try { names = await fs.readdir(cfg.dir); } catch { return { dir: cfg.dir, files: [] }; }
 
   const files = [];
-  for (const name of names.filter((n) => n.endsWith('.json')).sort().reverse()) {
+  for (const name of names.filter((n) => BACKUP_FILE.test(n)).sort().reverse()) {
     try {
       const st = await fs.stat(path.join(cfg.dir, name));
       files.push({ name, bytes: st.size, at: st.mtime.toISOString() });
