@@ -14,7 +14,7 @@ let versionCounter = 100;
 const mock = http.createServer(async (req, res) => {
   for await (const _ of req) { /* drain */ }
   const url = new URL(req.url, 'http://mock');
-  calls.push({ method: req.method, path: url.pathname, query: url.searchParams });
+  calls.push({ method: req.method, path: url.pathname, query: url.searchParams, headers: req.headers });
 
   const send = (obj, status = 200) => {
     res.writeHead(status, { 'content-type': 'application/json' });
@@ -52,7 +52,7 @@ const mock = http.createServer(async (req, res) => {
       'content-type': 'application/json',
       'roblox-entry-version': `v-${key}`,
       'roblox-entry-version-created-time': '2026-01-02T10:00:00Z',
-      'roblox-entry-userids': '[]',
+      'roblox-entry-userids': '[4242]',
     });
     return res.end(JSON.stringify({ coins: 10, key }));
   }
@@ -182,8 +182,8 @@ test('an overwrite records the version it replaced', async () => {
 
   const journal = await readJournal(r.undoId, dir);
   assert.deepEqual(journal.rows, [
-    { key: 'Player_1', previousVersion: 'v-Player_1' },
-    { key: 'Player_2', previousVersion: 'v-Player_2' },
+    { key: 'Player_1', previousVersion: 'v-Player_1', userIds: [4242] },
+    { key: 'Player_2', previousVersion: 'v-Player_2', userIds: [4242] },
   ]);
 });
 
@@ -192,7 +192,7 @@ test('a key the import created is recorded as having no previous version', async
   const r = await importDataStore(client(), 'PlayerData', dump(['Missing_1']), { dir });
 
   const journal = await readJournal(r.undoId, dir);
-  assert.deepEqual(journal.rows, [{ key: 'Missing_1', previousVersion: null }]);
+  assert.deepEqual(journal.rows, [{ key: 'Missing_1', previousVersion: null, userIds: [] }]);
 });
 
 test('a dry run leaves no journal behind', async () => {
@@ -299,4 +299,107 @@ test('an import id cannot climb out of the undo directory', async () => {
     /not allowed/,
   );
   await assert.rejects(async () => undoImport(client(), '', { dir }), /"id" is required/);
+});
+
+// ---------------------------------------------------------------------------
+// Regressions found auditing v1.1.0
+// ---------------------------------------------------------------------------
+test('a store whose name contains -- keeps its own retention bucket', async () => {
+  const dir = await tmp();
+  const config = { ...backupConfig({}), dir, keep: 2 };
+
+  for (const hour of ['10', '11', '12']) {
+    await fs.writeFile(path.join(dir, `Player--Data--2026-09-10T${hour}-00-00-000Z.json`), '{}');
+  }
+  for (const hour of ['09', '13']) {
+    await fs.writeFile(path.join(dir, `Player--2026-09-10T${hour}-00-00-000Z.json`), '{}');
+  }
+
+  await prune(config);
+  const left = (await fs.readdir(dir)).sort();
+
+  assert.equal(left.filter((n) => n.startsWith('Player--Data')).length, 2);
+  assert.equal(left.filter((n) => /^Player--2026/.test(n)).length, 2,
+    '"Player" must not lose files to "Player--Data"');
+});
+
+test('files that are not ours are left alone', async () => {
+  const dir = await tmp();
+  const config = { ...backupConfig({}), dir, keep: 1 };
+
+  await fs.writeFile(path.join(dir, 'notes.json'), '{}');
+  await fs.writeFile(path.join(dir, 'package.json'), '{}');
+  for (const hour of ['10', '11']) {
+    await fs.writeFile(path.join(dir, `PlayerData--2026-09-10T${hour}-00-00-000Z.json`), '{}');
+  }
+
+  const removed = await prune(config);
+  const left = (await fs.readdir(dir)).sort();
+
+  assert.deepEqual(removed, ['PlayerData--2026-09-10T10-00-00-000Z.json']);
+  assert.ok(left.includes('notes.json') && left.includes('package.json'));
+  assert.deepEqual((await listBackups(config)).files.map((f) => f.name),
+    ['PlayerData--2026-09-10T11-00-00-000Z.json'], 'the listing hides them too');
+});
+
+test('the newest import is the one offered, whatever the store is called', async () => {
+  const dir = await tmp();
+
+  await importDataStore(client(), 'ZStore', dump(['Player_1']), {
+    mode: 'overwrite', dir, now: new Date('2026-09-10T10:00:00Z'),
+  });
+  const newer = await importDataStore(client(), 'AStore', dump(['Player_1']), {
+    mode: 'overwrite', dir, now: new Date('2026-09-10T18:00:00Z'),
+  });
+
+  const { imports } = await listJournals(dir);
+  assert.equal(imports[0].id, newer.undoId, 'sorted by when it ran, not by filename');
+  assert.equal(imports.find((i) => !i.undoneAt).datastore, 'AStore');
+});
+
+test('an import records which universe it touched', async () => {
+  const dir = await tmp();
+  const r = await importDataStore(client(), 'PlayerData', dump(['Player_1']), {
+    mode: 'overwrite', dir,
+  });
+
+  assert.equal((await readJournal(r.undoId, dir)).universeId, '1');
+  assert.equal((await listJournals(dir)).imports[0].universeId, '1');
+});
+
+test('undo refuses a journal from a different universe', async () => {
+  const dir = await tmp();
+  const r = await importDataStore(client(), 'PlayerData', dump(['Player_1']), {
+    mode: 'overwrite', dir,
+  });
+
+  const other = new DataStoreClient({ apiKey: 'k', universeId: '999' });
+  await assert.rejects(
+    async () => undoImport(other, r.undoId, { dir }),
+    /universe 1, but this is 999/,
+  );
+});
+
+test('the listing only offers imports from the universe you are looking at', async () => {
+  const dir = await tmp();
+  await importDataStore(client(), 'PlayerData', dump(['Player_1']), { mode: 'overwrite', dir });
+
+  assert.equal((await listJournals(dir, { universeId: '1' })).imports.length, 1);
+  assert.equal((await listJournals(dir, { universeId: '999' })).imports.length, 0);
+  assert.equal((await listJournals(dir)).imports.length, 1, 'no filter means show everything');
+});
+
+test('undo puts the user ids back with the value', async () => {
+  const dir = await tmp();
+  const r = await importDataStore(client(), 'PlayerData', dump(['Player_1']), {
+    mode: 'overwrite', dir,
+  });
+
+  const before = calls.length;
+  await undoImport(client(), r.undoId, { dir });
+
+  const write = calls.slice(before).find((c) => c.method === 'POST');
+  assert.ok(write, 'a write went out');
+  assert.deepEqual(JSON.parse(write.headers['roblox-entry-userids']), [4242],
+    'the restored entry keeps its user ids');
 });
