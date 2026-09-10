@@ -632,9 +632,9 @@ function setUndoable(entry) {
 }
 
 // The newest import that has not been undone yet is the one the button offers.
-async function refreshUndo() {
+async function refreshUndo(universeId = state.universeId) {
   try {
-    const { imports } = await api('/api/imports?' + qs());
+    const { imports } = await api('/api/imports?' + qs({ universeId }));
     const open = (imports || []).find((i) => !i.undoneAt);
     setUndoable(open ? { id: open.id, datastore: open.datastore, rows: open.rows } : null);
   } catch {
@@ -676,7 +676,7 @@ async function runUndo() {
 
     if (!result.failed) setUndoable(null);
     loadKeys(false);
-    if (state.key) loadEntry(state.key);
+    if (state.key) openEntry();
   } catch (e) {
     toast(e.message, 'err');
   } finally {
@@ -840,7 +840,13 @@ function emptyLine(text, flush = true) {
 const isValidJson = (s) => { try { JSON.parse(s); return true; } catch { return false; } };
 const fmt = (t) => (t ? new Date(t).toLocaleString() : '–');
 
-const reload = () => (state.mode === 'ordered' ? loadOrderedEntries(false) : loadDataStores(false));
+const reload = () => {
+  // The undo journal is per universe, so what the button offers has to be
+  // re-checked whenever the universe in the header changes. Read the field
+  // directly - state.universeId is only updated once the load succeeds.
+  refreshUndo($('universe').value.trim());
+  return state.mode === 'ordered' ? loadOrderedEntries(false) : loadDataStores(false);
+};
 
 $('connect').onclick = reload;
 $('scope').onchange = reload;
